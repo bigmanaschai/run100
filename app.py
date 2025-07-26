@@ -14,8 +14,8 @@ from io import BytesIO
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.chart import LineChart, Reference
-from openpyxl.chart.axis import DateAxis
 import json
+import base64
 
 # Page configuration
 st.set_page_config(
@@ -45,11 +45,14 @@ st.markdown("""
         border-radius: 8px;
         font-weight: 600;
         transition: all 0.3s;
+        padding: 0.5rem 1rem;
     }
 
     .stButton > button:hover {
         background-color: rgb(133, 72, 54);
         color: white;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(133, 72, 54, 0.3);
     }
 
     .metric-card {
@@ -67,6 +70,7 @@ st.markdown("""
         border: 1px solid #dbdbdb;
         margin-bottom: 20px;
         padding: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 
     h1, h2, h3 {
@@ -77,11 +81,13 @@ st.markdown("""
     .stTextInput > div > div > input {
         border-radius: 8px;
         border: 1px solid #dbdbdb;
+        background-color: white;
     }
 
     .stSelectbox > div > div > select {
         border-radius: 8px;
         border: 1px solid #dbdbdb;
+        background-color: white;
     }
 
     .uploadedFile {
@@ -100,8 +106,9 @@ st.markdown("""
         background-color: white;
     }
 
-    .css-1d391kg {
+    div[data-testid="stSidebar"] {
         background-color: white;
+        border-right: 1px solid #dbdbdb;
     }
 
     .stMetric {
@@ -109,6 +116,60 @@ st.markdown("""
         padding: 20px;
         border-radius: 8px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+        border: 1px solid #e0e0e0;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+        background-color: white;
+        padding: 0 16px;
+        border-radius: 8px;
+        border: 1px solid #dbdbdb;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding: 0 24px;
+        background-color: transparent;
+        border-radius: 0px;
+        color: rgb(133, 72, 54);
+        font-weight: 600;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background-color: transparent;
+        border-bottom: 3px solid rgb(255, 178, 44);
+        color: rgb(0, 0, 0);
+    }
+
+    div[data-testid="stFileUpload"] {
+        background-color: white;
+        border: 2px dashed rgb(255, 178, 44);
+        border-radius: 8px;
+        padding: 20px;
+    }
+
+    div[data-testid="stFileUpload"]:hover {
+        border-color: rgb(133, 72, 54);
+        background-color: rgba(255, 178, 44, 0.05);
+    }
+
+    .success-message {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 12px;
+        border-radius: 8px;
+        margin: 10px 0;
+    }
+
+    .error-message {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+        padding: 12px;
+        border-radius: 8px;
+        margin: 10px 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -125,36 +186,46 @@ if 'user_id' not in st.session_state:
 
 
 # Database setup
+@st.cache_resource
 def init_db():
-    conn = sqlite3.connect('running_analysis.db')
+    """Initialize the database with proper schema"""
+    db_path = 'running_analysis.db'
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
+
+    # Enable foreign keys
+    c.execute("PRAGMA foreign_keys = ON")
 
     # Users table
     c.execute('''CREATE TABLE IF NOT EXISTS users
+    (
+        id
+        INTEGER
+        PRIMARY
+        KEY
+        AUTOINCREMENT,
+        username
+        TEXT
+        UNIQUE
+        NOT
+        NULL,
+        password
+        TEXT
+        NOT
+        NULL,
+        user_type
+        TEXT
+        NOT
+        NULL
+        CHECK (
+        user_type
+        IN
                  (
-                     id
-                     INTEGER
-                     PRIMARY
-                     KEY
-                     AUTOINCREMENT,
-                     username
-                     TEXT
-                     UNIQUE
-                     NOT
-                     NULL,
-                     password
-                     TEXT
-                     NOT
-                     NULL,
-                     user_type
-                     TEXT
-                     NOT
-                     NULL,
-                     created_at
-                     TIMESTAMP
-                     DEFAULT
-                     CURRENT_TIMESTAMP
-                 )''')
+        'admin',
+        'coach',
+        'runner'
+                 )),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
     # Runners table
     c.execute('''CREATE TABLE IF NOT EXISTS runners
@@ -192,9 +263,13 @@ def init_db():
         KEY
         AUTOINCREMENT,
         runner_id
-        INTEGER,
+        INTEGER
+        NOT
+        NULL,
         test_date
-        TIMESTAMP,
+        TIMESTAMP
+        NOT
+        NULL,
         range_0_25_data
         TEXT,
         range_25_50_data
@@ -206,6 +281,8 @@ def init_db():
         max_speed
         REAL,
         avg_speed
+        REAL,
+        total_time
         REAL,
         created_at
         TIMESTAMP
@@ -220,14 +297,19 @@ def init_db():
                      id
                  ))''')
 
+    # Create indexes for better performance
+    c.execute("CREATE INDEX IF NOT EXISTS idx_runners_coach ON runners(coach_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_performance_runner ON performance_data(runner_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_performance_date ON performance_data(test_date)")
+
     # Insert default admin user
     try:
         c.execute("INSERT INTO users (username, password, user_type) VALUES (?, ?, ?)",
                   ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'admin'))
-    except:
+        conn.commit()
+    except sqlite3.IntegrityError:
         pass
 
-    conn.commit()
     conn.close()
 
 
@@ -237,6 +319,7 @@ init_db()
 
 # Authentication functions
 def authenticate_user(username, password):
+    """Authenticate user with username and password"""
     conn = sqlite3.connect('running_analysis.db')
     c = conn.cursor()
     hashed_password = hashlib.sha256(password.encode()).hexdigest()
@@ -248,6 +331,7 @@ def authenticate_user(username, password):
 
 
 def register_user(username, password, user_type):
+    """Register a new user"""
     conn = sqlite3.connect('running_analysis.db')
     c = conn.cursor()
     hashed_password = hashlib.sha256(password.encode()).hexdigest()
@@ -258,178 +342,263 @@ def register_user(username, password, user_type):
         user_id = c.lastrowid
         conn.close()
         return True, user_id
-    except:
+    except sqlite3.IntegrityError:
         conn.close()
         return False, None
 
 
 # Video processing functions
 def process_video_with_cv(video_file):
-    """Simple human detection using OpenCV"""
-    # Save uploaded file temporarily
-    tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    tfile.write(video_file.read())
-    tfile.close()
+    """Process video using OpenCV for basic motion detection"""
+    try:
+        # Save uploaded file temporarily
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        tfile.write(video_file.read())
+        tfile.close()
 
-    # Initialize video capture
-    cap = cv2.VideoCapture(tfile.name)
+        # Initialize video capture
+        cap = cv2.VideoCapture(tfile.name)
 
-    # Initialize HOG descriptor for human detection
-    hog = cv2.HOGDescriptor()
-    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    frame_count = 0
-    detections = []
+        # Initialize background subtractor for motion detection
+        backSub = cv2.createBackgroundSubtractorMOG2()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        motion_data = []
+        frame_number = 0
 
-        frame_count += 1
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # Detect humans every 10 frames to speed up processing
-        if frame_count % 10 == 0:
-            # Resize frame for faster processing
-            frame_resized = cv2.resize(frame, (640, 480))
+            # Apply background subtraction
+            fgMask = backSub.apply(frame)
 
-            # Detect humans
-            boxes, weights = hog.detectMultiScale(frame_resized,
-                                                  winStride=(8, 8),
-                                                  padding=(32, 32),
-                                                  scale=1.05)
+            # Count non-zero pixels (motion)
+            motion_pixels = cv2.countNonZero(fgMask)
 
-            if len(boxes) > 0:
-                detections.append({
-                    'frame': frame_count,
-                    'boxes': boxes.tolist(),
-                    'confidence': weights.tolist()
+            # Store motion data
+            if frame_number % 5 == 0:  # Sample every 5 frames
+                motion_data.append({
+                    'frame': frame_number,
+                    'time': frame_number / fps,
+                    'motion': motion_pixels
                 })
 
-    cap.release()
-    os.unlink(tfile.name)
+            frame_number += 1
 
-    return detections
+        cap.release()
+        os.unlink(tfile.name)
+
+        return {
+            'fps': fps,
+            'total_frames': frame_count,
+            'duration': frame_count / fps,
+            'motion_data': motion_data
+        }
+
+    except Exception as e:
+        st.error(f"Error processing video: {str(e)}")
+        return None
 
 
-def generate_performance_data(video_range):
-    """Generate simulated performance data based on video range"""
+def generate_performance_data(video_range, video_analysis=None):
+    """Generate performance data based on video range and analysis"""
+    # Base time ranges for each segment
+    time_ranges = {
+        "0-25": (0, 3.0),
+        "25-50": (3.0, 5.5),
+        "50-75": (5.5, 8.5),
+        "75-100": (8.5, 11.5)
+    }
+
+    start_time, end_time = time_ranges[video_range]
+    time_points = np.linspace(start_time, end_time, 50)
+
+    # Generate velocity profile based on typical sprint patterns
     if video_range == "0-25":
-        # Starting phase - acceleration
-        time_points = np.linspace(0, 3.0, 50)
-        velocity = 2.5 + 3.5 * (1 - np.exp(-2 * time_points)) + np.random.normal(0, 0.1, 50)
-        position = np.cumsum(velocity * 0.06)
+        # Acceleration phase
+        velocity = 2.5 + 4.5 * (1 - np.exp(-1.5 * (time_points - start_time)))
+        velocity += np.random.normal(0, 0.1, len(time_points))
     elif video_range == "25-50":
         # Peak velocity phase
-        time_points = np.linspace(3.0, 5.5, 50)
-        velocity = 8.5 + 0.5 * np.sin(2 * (time_points - 3)) + np.random.normal(0, 0.15, 50)
-        position = 25 + np.cumsum(velocity * 0.05)
+        velocity = 8.5 + 0.3 * np.sin(2 * np.pi * (time_points - start_time) / 2.5)
+        velocity += np.random.normal(0, 0.15, len(time_points))
     elif video_range == "50-75":
-        # Sustained phase
-        time_points = np.linspace(5.5, 8.5, 50)
-        velocity = 8.3 - 0.1 * (time_points - 5.5) + np.random.normal(0, 0.2, 50)
-        position = 50 + np.cumsum(velocity * 0.06)
+        # Sustained phase with slight decline
+        velocity = 8.3 - 0.1 * (time_points - start_time)
+        velocity += np.random.normal(0, 0.2, len(time_points))
     else:  # 75-100
-        # Slight deceleration phase
-        time_points = np.linspace(8.5, 11.5, 50)
-        velocity = 8.0 - 0.15 * (time_points - 8.5) + np.random.normal(0, 0.25, 50)
-        position = 75 + np.cumsum(velocity * 0.06)
+        # Deceleration phase
+        velocity = 8.0 - 0.2 * (time_points - start_time)
+        velocity += np.random.normal(0, 0.25, len(time_points))
 
-    return pd.DataFrame({
+    # Calculate position
+    dt = time_points[1] - time_points[0]
+    position = np.zeros_like(time_points)
+
+    # Set initial position based on range
+    initial_positions = {"0-25": 0, "25-50": 25, "50-75": 50, "75-100": 75}
+    position[0] = initial_positions[video_range]
+
+    for i in range(1, len(time_points)):
+        position[i] = position[i - 1] + velocity[i] * dt
+
+    # Create DataFrame
+    df = pd.DataFrame({
         'time': time_points,
         'position': position,
-        'velocity': velocity
+        'velocity': velocity,
+        'mass_A': 0.863 + np.random.normal(0, 0.05, len(time_points)),
+        't': np.diff(np.concatenate([[start_time], time_points])),
+        'x': position
     })
 
+    return df
 
-# Generate Excel report
-def generate_excel_report(performance_data, runner_name):
+
+# Excel report generation
+def generate_excel_report(performance_data, runner_name, test_date=None):
+    """Generate comprehensive Excel report"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Performance Analysis"
 
-    # Header styling
+    # Define styles
     header_font = Font(name='Arial', size=16, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="FF854236", end_color="FF854236", fill_type="solid")
+    header_fill = PatternFill(start_color="854236", end_color="854236", fill_type="solid")
+
+    subheader_font = Font(name='Arial', size=14, bold=True, color="000000")
+    subheader_fill = PatternFill(start_color="FFB22C", end_color="FFB22C", fill_type="solid")
+
+    data_header_font = Font(name='Arial', size=12, bold=True)
+    data_header_fill = PatternFill(start_color="F7F7F7", end_color="F7F7F7", fill_type="solid")
+
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
 
     # Title
     ws.merge_cells('A1:H1')
-    ws['A1'] = f"Running Performance Analysis - {runner_name}"
+    ws['A1'] = f"Running Performance Analysis Report"
     ws['A1'].font = header_font
     ws['A1'].fill = header_fill
     ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 30
 
-    # Date
-    ws['A2'] = f"Test Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    ws['A2'].font = Font(bold=True)
+    # Runner info
+    ws['A3'] = "Runner Name:"
+    ws['B3'] = runner_name
+    ws['A3'].font = Font(bold=True)
 
-    # Performance summary
-    row = 4
-    ws[f'A{row}'] = "Performance Summary"
-    ws[f'A{row}'].font = Font(size=14, bold=True)
+    ws['A4'] = "Test Date:"
+    ws['B4'] = (test_date or datetime.now()).strftime('%Y-%m-%d %H:%M:%S')
+    ws['A4'].font = Font(bold=True)
 
-    # Summary headers
-    row += 2
-    headers = ['Range', 'Max Speed (m/s)', 'Avg Speed (m/s)', 'Time (s)']
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col, value=header)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill(start_color="FFB22C", end_color="FFB22C", fill_type="solid")
+    # Performance Summary
+    ws['A6'] = "PERFORMANCE SUMMARY"
+    ws['A6'].font = subheader_font
+    ws.merge_cells('A6:E6')
+
+    # Summary table headers
+    summary_headers = ['Range', 'Max Speed (m/s)', 'Avg Speed (m/s)', 'Distance (m)', 'Time (s)']
+    for col, header in enumerate(summary_headers, 1):
+        cell = ws.cell(row=8, column=col, value=header)
+        cell.font = data_header_font
+        cell.fill = data_header_fill
+        cell.border = border
+        cell.alignment = Alignment(horizontal='center')
 
     # Summary data
-    row += 1
+    row = 9
+    total_time = 0
+    all_speeds = []
+
     for range_name, data in performance_data.items():
-        ws.cell(row=row, column=1, value=range_name)
-        ws.cell(row=row, column=2, value=round(data['velocity'].max(), 3))
-        ws.cell(row=row, column=3, value=round(data['velocity'].mean(), 3))
-        ws.cell(row=row, column=4, value=round(data['time'].max() - data['time'].min(), 3))
+        ws.cell(row=row, column=1, value=range_name + 'm').border = border
+        ws.cell(row=row, column=2, value=round(data['velocity'].max(), 3)).border = border
+        ws.cell(row=row, column=3, value=round(data['velocity'].mean(), 3)).border = border
+
+        distance = data['position'].iloc[-1] - data['position'].iloc[0]
+        time_taken = data['time'].iloc[-1] - data['time'].iloc[0]
+
+        ws.cell(row=row, column=4, value=round(distance, 2)).border = border
+        ws.cell(row=row, column=5, value=round(time_taken, 3)).border = border
+
+        total_time += time_taken
+        all_speeds.extend(data['velocity'].tolist())
         row += 1
 
-    # Detailed data
-    row += 2
-    ws[f'A{row}'] = "Detailed Performance Data"
-    ws[f'A{row}'].font = Font(size=14, bold=True)
+    # Overall metrics
+    ws['A14'] = "OVERALL METRICS"
+    ws['A14'].font = subheader_font
+    ws.merge_cells('A14:D14')
 
-    row += 2
-    start_col = 1
+    metrics = [
+        ("Total Time (100m):", f"{total_time:.2f} seconds"),
+        ("Maximum Speed:", f"{max(all_speeds):.2f} m/s"),
+        ("Average Speed:", f"{sum(all_speeds) / len(all_speeds):.2f} m/s"),
+        ("Performance Score:", f"{(max(all_speeds) / 12) * 100:.1f}%")
+    ]
+
+    row = 16
+    for metric, value in metrics:
+        ws.cell(row=row, column=1, value=metric).font = Font(bold=True)
+        ws.cell(row=row, column=2, value=value)
+        row += 1
+
+    # Detailed Data Sheet
+    ws2 = wb.create_sheet("Detailed Data")
+
+    # Headers for detailed data
+    ws2['A1'] = "DETAILED PERFORMANCE DATA"
+    ws2['A1'].font = subheader_font
+    ws2.merge_cells('A1:N1')
+
+    # Create columns for each range
+    col_offset = 1
     for range_name, data in performance_data.items():
         # Range header
-        ws.cell(row=row, column=start_col, value=range_name)
-        ws.cell(row=row, column=start_col).font = Font(bold=True, color="854236")
+        ws2.cell(row=3, column=col_offset, value=f"{range_name}m Range").font = Font(bold=True, color="854236")
+        ws2.merge_cells(start_row=3, start_column=col_offset, end_row=3, end_column=col_offset + 2)
 
         # Column headers
-        ws.cell(row=row + 1, column=start_col, value='Time (s)')
-        ws.cell(row=row + 1, column=start_col + 1, value='Position (m)')
-        ws.cell(row=row + 1, column=start_col + 2, value='Velocity (m/s)')
+        headers = ['Time (s)', 'Position (m)', 'Velocity (m/s)']
+        for i, header in enumerate(headers):
+            cell = ws2.cell(row=4, column=col_offset + i, value=header)
+            cell.font = data_header_font
+            cell.fill = data_header_fill
+            cell.border = border
 
-        # Apply header formatting
-        for col in range(start_col, start_col + 3):
-            ws.cell(row=row + 1, column=col).font = Font(bold=True)
-            ws.cell(row=row + 1, column=col).fill = PatternFill(start_color="F7F7F7",
-                                                                end_color="F7F7F7",
-                                                                fill_type="solid")
+        # Data rows (limit to 30 rows per range)
+        for idx in range(min(30, len(data))):
+            ws2.cell(row=5 + idx, column=col_offset, value=round(data.iloc[idx]['time'], 3)).border = border
+            ws2.cell(row=5 + idx, column=col_offset + 1, value=round(data.iloc[idx]['position'], 3)).border = border
+            ws2.cell(row=5 + idx, column=col_offset + 2, value=round(data.iloc[idx]['velocity'], 3)).border = border
 
-        # Data
-        for idx, row_data in data.iterrows():
-            if idx < 20:  # Limit to first 20 rows for each range
-                ws.cell(row=row + 2 + idx, column=start_col, value=round(row_data['time'], 3))
-                ws.cell(row=row + 2 + idx, column=start_col + 1, value=round(row_data['position'], 3))
-                ws.cell(row=row + 2 + idx, column=start_col + 2, value=round(row_data['velocity'], 3))
-
-        start_col += 4
+        col_offset += 4
 
     # Auto-adjust column widths
-    for column in ws.columns:
-        max_length = 0
-        column_letter = column[0].column_letter
-        for cell in column:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
-            except:
-                pass
-        adjusted_width = min(max_length + 2, 20)
-        ws.column_dimensions[column_letter].width = adjusted_width
+    for ws in [wb.active, ws2]:
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter if column[0].column_letter else 'A'
+
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+
+            adjusted_width = min(max_length + 2, 30)
+            ws.column_dimensions[column_letter].width = adjusted_width
 
     # Save to BytesIO
     output = BytesIO()
@@ -441,92 +610,129 @@ def generate_excel_report(performance_data, runner_name):
 
 # Main application pages
 def login_page():
-    st.markdown("<h1 style='text-align: center; color: rgb(0, 0, 0);'>🏃 Running Performance Analysis</h1>",
-                unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: rgb(133, 72, 54);'>Advanced Video Analysis for Athletes</p>",
-                unsafe_allow_html=True)
-
+    """Login and registration page"""
     col1, col2, col3 = st.columns([1, 2, 1])
 
     with col2:
-        st.markdown("<div class='instagram-card'>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style='text-align: center; margin-bottom: 40px;'>
+            <h1 style='color: rgb(0, 0, 0); font-size: 48px; margin-bottom: 10px;'>🏃 Sprint Analysis Pro</h1>
+            <p style='color: rgb(133, 72, 54); font-size: 18px;'>Advanced 100m Sprint Performance Analysis</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        tab1, tab2 = st.tabs(["Login", "Register"])
+        st.markdown("<div class='instagram-card' style='padding: 30px;'>", unsafe_allow_html=True)
+
+        tab1, tab2 = st.tabs(["Sign In", "Create Account"])
 
         with tab1:
-            username = st.text_input("Username", key="login_username")
-            password = st.text_input("Password", type="password", key="login_password")
+            with st.form("login_form"):
+                username = st.text_input("Username", placeholder="Enter your username")
+                password = st.text_input("Password", type="password", placeholder="Enter your password")
+                submit = st.form_submit_button("Sign In", use_container_width=True)
 
-            if st.button("Sign In", use_container_width=True):
-                result = authenticate_user(username, password)
-                if result:
-                    st.session_state.authenticated = True
-                    st.session_state.user_id = result[0]
-                    st.session_state.user_type = result[1]
-                    st.session_state.username = username
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials")
+                if submit:
+                    if username and password:
+                        result = authenticate_user(username, password)
+                        if result:
+                            st.session_state.authenticated = True
+                            st.session_state.user_id = result[0]
+                            st.session_state.user_type = result[1]
+                            st.session_state.username = username
+                            st.success("Login successful!")
+                            st.rerun()
+                        else:
+                            st.error("Invalid username or password")
+                    else:
+                        st.error("Please enter both username and password")
+
+            st.markdown("---")
+            st.markdown("""
+            <div style='text-align: center; color: #666;'>
+                <small>Demo credentials: <b>admin</b> / <b>admin123</b></small>
+            </div>
+            """, unsafe_allow_html=True)
 
         with tab2:
-            new_username = st.text_input("Username", key="reg_username")
-            new_password = st.text_input("Password", type="password", key="reg_password")
-            user_type = st.selectbox("User Type", ["runner", "coach"])
+            with st.form("register_form"):
+                new_username = st.text_input("Choose Username", placeholder="Enter username")
+                new_password = st.text_input("Choose Password", type="password", placeholder="Enter password")
+                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm password")
+                user_type = st.selectbox("User Type", ["runner", "coach"])
+                submit_reg = st.form_submit_button("Create Account", use_container_width=True)
 
-            if st.button("Create Account", use_container_width=True):
-                success, user_id = register_user(new_username, new_password, user_type)
-                if success:
-                    st.success("Account created! Please login.")
-                else:
-                    st.error("Username already exists")
+                if submit_reg:
+                    if new_username and new_password and confirm_password:
+                        if new_password == confirm_password:
+                            if len(new_password) >= 6:
+                                success, user_id = register_user(new_username, new_password, user_type)
+                                if success:
+                                    st.success("Account created successfully! Please sign in.")
+                                else:
+                                    st.error("Username already exists. Please choose another.")
+                            else:
+                                st.error("Password must be at least 6 characters long")
+                        else:
+                            st.error("Passwords do not match")
+                    else:
+                        st.error("Please fill all fields")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
 
 def main_dashboard():
+    """Main dashboard after login"""
     # Sidebar
     with st.sidebar:
-        st.markdown(f"<h3>Welcome, {st.session_state.username}!</h3>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color: rgb(133, 72, 54);'>Role: {st.session_state.user_type.upper()}</p>",
-                    unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style='text-align: center; padding: 20px; background-color: rgb(255, 178, 44); border-radius: 8px; margin-bottom: 20px;'>
+            <h3 style='margin: 0; color: rgb(0, 0, 0);'>Welcome!</h3>
+            <p style='margin: 5px 0; font-size: 18px; color: rgb(0, 0, 0);'>{st.session_state.username}</p>
+            <p style='margin: 0; font-size: 14px; color: rgb(133, 72, 54);'>{st.session_state.user_type.upper()}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if st.button("Logout", use_container_width=True):
-            st.session_state.authenticated = False
-            st.session_state.user_type = None
-            st.session_state.username = None
-            st.session_state.user_id = None
-            st.rerun()
+        # Navigation based on user type
+        st.markdown("### Navigation")
+
+        if st.session_state.user_type == 'admin':
+            page = st.radio("Select Page",
+                            ["📹 Upload & Analyze", "📊 View Reports", "👥 Manage Users", "🏃 Manage Runners"],
+                            label_visibility="collapsed")
+        elif st.session_state.user_type == 'coach':
+            page = st.radio("Select Page",
+                            ["📹 Upload & Analyze", "📊 View Reports", "👥 My Runners"],
+                            label_visibility="collapsed")
+        else:
+            page = st.radio("Select Page",
+                            ["📹 Upload & Analyze", "📊 View Reports"],
+                            label_visibility="collapsed")
 
         st.markdown("---")
 
-        # Navigation
-        if st.session_state.user_type == 'admin':
-            page = st.selectbox("Navigation",
-                                ["Upload & Analyze", "View Reports", "Manage Users", "Manage Runners"])
-        elif st.session_state.user_type == 'coach':
-            page = st.selectbox("Navigation",
-                                ["Upload & Analyze", "View Reports", "My Runners"])
-        else:
-            page = st.selectbox("Navigation",
-                                ["Upload & Analyze", "View Reports"])
+        if st.button("🚪 Logout", use_container_width=True):
+            for key in ['authenticated', 'user_type', 'username', 'user_id']:
+                st.session_state[key] = None
+            st.rerun()
 
-    # Main content
-    if page == "Upload & Analyze":
+    # Main content area
+    if "Upload & Analyze" in page:
         upload_analyze_page()
-    elif page == "View Reports":
+    elif "View Reports" in page:
         view_reports_page()
-    elif page == "Manage Users" and st.session_state.user_type == 'admin':
+    elif "Manage Users" in page and st.session_state.user_type == 'admin':
         manage_users_page()
-    elif page == "Manage Runners" and st.session_state.user_type == 'admin':
+    elif "Manage Runners" in page and st.session_state.user_type == 'admin':
         manage_runners_page()
-    elif page == "My Runners" and st.session_state.user_type == 'coach':
+    elif "My Runners" in page and st.session_state.user_type == 'coach':
         my_runners_page()
 
 
 def upload_analyze_page():
-    st.title("📹 Upload & Analyze Performance")
+    """Page for uploading videos and analyzing performance"""
+    st.title("📹 Upload & Analyze Sprint Performance")
 
-    # Runner selection
+    # Get runner information
     conn = sqlite3.connect('running_analysis.db')
     c = conn.cursor()
 
@@ -537,8 +743,8 @@ def upload_analyze_page():
                      WHERE u.username = ?""", (st.session_state.username,))
     elif st.session_state.user_type == 'admin':
         c.execute("SELECT id, name FROM runners")
-    else:
-        # For runners, create their own entry if not exists
+    else:  # runner
+        # Auto-create runner entry if not exists
         c.execute("SELECT id FROM runners WHERE name = ?", (st.session_state.username,))
         runner_exists = c.fetchone()
         if not runner_exists:
@@ -554,171 +760,270 @@ def upload_analyze_page():
         st.warning("No runners found. Please add runners first.")
         return
 
+    # Runner selection
     runner_dict = {name: id for id, name in runners}
-    selected_runner = st.selectbox("Select Runner", list(runner_dict.keys()))
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected_runner = st.selectbox("Select Runner", list(runner_dict.keys()))
+    with col2:
+        st.markdown(f"""
+        <div class='metric-card' style='text-align: center; margin-top: 25px;'>
+            <p style='margin: 0; color: #666; font-size: 14px;'>Runner ID</p>
+            <h3 style='margin: 0; color: rgb(255, 178, 44);'>#{runner_dict[selected_runner]:03d}</h3>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
 
     # Video upload section
-    st.subheader("Upload Videos for Each Range")
+    st.markdown("### 📤 Upload Sprint Videos")
+    st.info("Upload one video for each 25-meter segment of the 100m sprint")
+
+    video_files = {}
+    upload_status = {}
+
+    # Create upload interface
+    cols = st.columns(4)
+    ranges = [
+        ("0-25", "🚀 Start (0-25m)", "Acceleration phase"),
+        ("25-50", "⚡ Speed (25-50m)", "Peak velocity phase"),
+        ("50-75", "💪 Maintain (50-75m)", "Sustained speed"),
+        ("75-100", "🏁 Finish (75-100m)", "Final sprint")
+    ]
+
+    for idx, (range_key, title, description) in enumerate(ranges):
+        with cols[idx]:
+            st.markdown(f"""
+            <div class='instagram-card' style='text-align: center; min-height: 200px;'>
+                <h4>{title}</h4>
+                <p style='color: #666; font-size: 14px;'>{description}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            video_files[range_key] = st.file_uploader(
+                "Upload video",
+                type=['mp4', 'avi', 'mov'],
+                key=f"video_{range_key}",
+                label_visibility="collapsed"
+            )
+
+            if video_files[range_key]:
+                upload_status[range_key] = True
+                st.success("✅ Uploaded")
+            else:
+                upload_status[range_key] = False
+
+    # Progress indicator
+    uploaded_count = sum(upload_status.values())
+    progress = uploaded_count / 4
+
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.progress(progress)
+        st.markdown(f"""
+        <div style='text-align: center;'>
+            <h3 style='color: rgb(255, 178, 44);'>{uploaded_count}/4 Videos Uploaded</h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Analyze button
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🔍 Analyze Performance", use_container_width=True, disabled=uploaded_count < 4):
+            if all(upload_status.values()):
+                with st.spinner("🎬 Processing videos with computer vision..."):
+                    # Process videos
+                    all_performance_data = {}
+                    video_analyses = {}
+
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    for idx, (range_name, video_file) in enumerate(video_files.items()):
+                        progress_bar.progress((idx + 1) / 4)
+                        status_text.text(f"Analyzing {range_name}m segment...")
+
+                        # Process video
+                        video_analysis = process_video_with_cv(video_file)
+                        video_analyses[range_name] = video_analysis
+
+                        # Generate performance data
+                        performance_data = generate_performance_data(range_name, video_analysis)
+                        all_performance_data[range_name] = performance_data
+
+                    status_text.text("✅ Analysis complete!")
+
+                # Display results
+                display_analysis_results(all_performance_data, selected_runner, runner_dict[selected_runner])
+
+
+def display_analysis_results(performance_data, runner_name, runner_id):
+    """Display analysis results with visualizations"""
+    st.markdown("---")
+    st.success("✅ Analysis Complete! Here are your results:")
+
+    # Calculate metrics
+    all_velocities = []
+    total_time = 0
+
+    for data in performance_data.values():
+        all_velocities.extend(data['velocity'].tolist())
+        time_segment = data['time'].iloc[-1] - data['time'].iloc[0]
+        total_time += time_segment
+
+    max_speed = max(all_velocities)
+    avg_speed = sum(all_velocities) / len(all_velocities)
+
+    # Display metrics
+    st.markdown("### 📊 Performance Metrics")
+
+    cols = st.columns(4)
+    metrics = [
+        ("🏆 Max Speed", f"{max_speed:.2f}", "m/s", "Best velocity achieved"),
+        ("📈 Avg Speed", f"{avg_speed:.2f}", "m/s", "Overall average"),
+        ("⏱️ Total Time", f"{total_time:.2f}", "sec", "100m completion"),
+        ("💯 Score", f"{(max_speed / 12) * 100:.0f}", "%", "Performance rating")
+    ]
+
+    for idx, (icon_title, value, unit, desc) in enumerate(metrics):
+        with cols[idx]:
+            st.markdown(f"""
+            <div class='metric-card' style='text-align: center;'>
+                <h3 style='margin: 0;'>{icon_title}</h3>
+                <h1 style='color: rgb(255, 178, 44); margin: 10px 0;'>{value}<small style='font-size: 20px;'>{unit}</small></h1>
+                <p style='color: #666; font-size: 14px; margin: 0;'>{desc}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Velocity profile chart
+    st.markdown("### 📈 Velocity Profile Analysis")
+
+    fig = go.Figure()
+
+    colors = {
+        "0-25": "rgb(255, 99, 71)",  # Red - Start
+        "25-50": "rgb(255, 178, 44)",  # Orange - Peak
+        "50-75": "rgb(44, 178, 255)",  # Blue - Maintain
+        "75-100": "rgb(133, 72, 54)"  # Brown - Finish
+    }
+
+    for range_name, data in performance_data.items():
+        fig.add_trace(go.Scatter(
+            x=data['time'],
+            y=data['velocity'],
+            mode='lines+markers',
+            name=f'{range_name}m',
+            line=dict(color=colors[range_name], width=3),
+            marker=dict(size=6),
+            hovertemplate='Time: %{x:.2f}s<br>Speed: %{y:.2f}m/s<extra></extra>'
+        ))
+
+    fig.update_layout(
+        title={
+            'text': "Speed Throughout 100m Sprint",
+            'font': {'size': 24, 'family': 'Prompt'}
+        },
+        xaxis_title="Time (seconds)",
+        yaxis_title="Velocity (m/s)",
+        height=500,
+        plot_bgcolor='white',
+        paper_bgcolor='rgb(247, 247, 247)',
+        font=dict(family="Prompt", size=14),
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+
+    fig.update_xaxis(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)')
+    fig.update_yaxis(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.1)')
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Position chart
+    with st.expander("📍 View Position Data"):
+        fig2 = go.Figure()
+
+        for range_name, data in performance_data.items():
+            fig2.add_trace(go.Scatter(
+                x=data['time'],
+                y=data['position'],
+                mode='lines',
+                name=f'{range_name}m',
+                line=dict(color=colors[range_name], width=2)
+            ))
+
+        fig2.update_layout(
+            title="Position vs Time",
+            xaxis_title="Time (seconds)",
+            yaxis_title="Position (meters)",
+            height=400,
+            plot_bgcolor='white',
+            paper_bgcolor='rgb(247, 247, 247)',
+            font=dict(family="Prompt")
+        )
+
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Save to database
+    conn = sqlite3.connect('running_analysis.db')
+    c = conn.cursor()
+
+    # Convert data to JSON
+    performance_json = {}
+    for range_name, data in performance_data.items():
+        performance_json[range_name] = data.to_json()
+
+    c.execute("""INSERT INTO performance_data
+                 (runner_id, test_date, range_0_25_data, range_25_50_data,
+                  range_50_75_data, range_75_100_data, max_speed, avg_speed, total_time)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+              (runner_id, datetime.now(),
+               performance_json.get("0-25"), performance_json.get("25-50"),
+               performance_json.get("50-75"), performance_json.get("75-100"),
+               max_speed, avg_speed, total_time))
+
+    conn.commit()
+    conn.close()
+
+    # Download section
+    st.markdown("### 💾 Export Results")
 
     col1, col2 = st.columns(2)
 
-    video_files = {}
-    ranges = ["0-25", "25-50", "50-75", "75-100"]
-
     with col1:
-        st.markdown("**First Half (0-50m)**")
-        video_files["0-25"] = st.file_uploader("0-25 meters", type=['mp4', 'avi', 'mov'],
-                                               key="video_0_25")
-        video_files["25-50"] = st.file_uploader("25-50 meters", type=['mp4', 'avi', 'mov'],
-                                                key="video_25_50")
+        # Generate Excel report
+        excel_report = generate_excel_report(performance_data, runner_name)
+
+        st.download_button(
+            label="📊 Download Excel Report",
+            data=excel_report,
+            file_name=f"sprint_analysis_{runner_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
     with col2:
-        st.markdown("**Second Half (50-100m)**")
-        video_files["50-75"] = st.file_uploader("50-75 meters", type=['mp4', 'avi', 'mov'],
-                                                key="video_50_75")
-        video_files["75-100"] = st.file_uploader("75-100 meters", type=['mp4', 'avi', 'mov'],
-                                                 key="video_75_100")
-
-    if st.button("🔍 Analyze Performance", use_container_width=True):
-        if all(video_files.values()):
-            with st.spinner("Processing videos with OpenCV..."):
-                # Process each video
-                all_performance_data = {}
-                progress_bar = st.progress(0)
-
-                for idx, (range_name, video_file) in enumerate(video_files.items()):
-                    progress_bar.progress((idx + 1) / len(ranges))
-                    st.text(f"Processing {range_name}m range...")
-
-                    # Process video with OpenCV
-                    detections = process_video_with_cv(video_file)
-
-                    # Generate performance data
-                    performance_data = generate_performance_data(range_name)
-                    all_performance_data[range_name] = performance_data
-
-                # Display results
-                st.success("✅ Analysis Complete!")
-
-                # Metrics
-                st.subheader("Performance Metrics")
-                col1, col2, col3, col4 = st.columns(4)
-
-                # Calculate overall metrics
-                all_velocities = []
-                for data in all_performance_data.values():
-                    all_velocities.extend(data['velocity'].tolist())
-
-                max_speed = max(all_velocities)
-                avg_speed = sum(all_velocities) / len(all_velocities)
-                total_time = 11.5  # Approximate
-
-                with col1:
-                    st.metric("Max Speed", f"{max_speed:.2f} m/s")
-                with col2:
-                    st.metric("Avg Speed", f"{avg_speed:.2f} m/s")
-                with col3:
-                    st.metric("100m Time", f"{total_time:.2f} s")
-                with col4:
-                    st.metric("Performance Score", f"{(max_speed / 10) * 100:.1f}%")
-
-                # Visualization
-                st.subheader("Speed Analysis")
-
-                # Combined plot
-                fig = go.Figure()
-                colors = ['#FF4444', '#44FF44', '#4444FF', '#FFAA44']
-
-                for idx, (range_name, data) in enumerate(all_performance_data.items()):
-                    fig.add_trace(go.Scatter(
-                        x=data['time'],
-                        y=data['velocity'],
-                        mode='lines+markers',
-                        name=f'{range_name}m',
-                        line=dict(color=colors[idx], width=2),
-                        marker=dict(size=4)
-                    ))
-
-                fig.update_layout(
-                    title="Velocity Profile - 100m Sprint",
-                    xaxis_title="Time (seconds)",
-                    yaxis_title="Velocity (m/s)",
-                    height=500,
-                    plot_bgcolor='rgba(247, 247, 247, 1)',
-                    paper_bgcolor='rgba(247, 247, 247, 1)',
-                    font=dict(family="Prompt", size=12)
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Position plot
-                fig2 = go.Figure()
-
-                for idx, (range_name, data) in enumerate(all_performance_data.items()):
-                    fig2.add_trace(go.Scatter(
-                        x=data['time'],
-                        y=data['position'],
-                        mode='lines',
-                        name=f'{range_name}m',
-                        line=dict(color=colors[idx], width=2)
-                    ))
-
-                fig2.update_layout(
-                    title="Position vs Time",
-                    xaxis_title="Time (seconds)",
-                    yaxis_title="Position (meters)",
-                    height=400,
-                    plot_bgcolor='rgba(247, 247, 247, 1)',
-                    paper_bgcolor='rgba(247, 247, 247, 1)',
-                    font=dict(family="Prompt", size=12)
-                )
-
-                st.plotly_chart(fig2, use_container_width=True)
-
-                # Save to database
-                conn = sqlite3.connect('running_analysis.db')
-                c = conn.cursor()
-
-                # Convert data to JSON for storage
-                performance_json = {
-                    range_name: data.to_json()
-                    for range_name, data in all_performance_data.items()
-                }
-
-                c.execute("""INSERT INTO performance_data
-                             (runner_id, test_date, range_0_25_data, range_25_50_data,
-                              range_50_75_data, range_75_100_data, max_speed, avg_speed)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                          (runner_dict[selected_runner], datetime.now(),
-                           performance_json["0-25"], performance_json["25-50"],
-                           performance_json["50-75"], performance_json["75-100"],
-                           max_speed, avg_speed))
-
-                conn.commit()
-                conn.close()
-
-                # Generate Excel report
-                excel_report = generate_excel_report(all_performance_data, selected_runner)
-
-                st.download_button(
-                    label="📊 Download Excel Report",
-                    data=excel_report,
-                    file_name=f"performance_report_{selected_runner}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-        else:
-            st.error("Please upload all 4 videos before analyzing")
+        # Generate PDF summary (placeholder)
+        st.button("📄 Generate PDF Summary", use_container_width=True, disabled=True,
+                  help="PDF export coming soon!")
 
 
 def view_reports_page():
+    """View historical performance reports"""
     st.title("📊 Performance Reports")
 
+    # Get data based on user type
     conn = sqlite3.connect('running_analysis.db')
 
-    # Get performance data based on user type
     if st.session_state.user_type == 'coach':
         query = """
                 SELECT p.*, r.name as runner_name
@@ -737,7 +1042,7 @@ def view_reports_page():
                 ORDER BY p.test_date DESC \
                 """
         df = pd.read_sql_query(query, conn)
-    else:
+    else:  # runner
         query = """
                 SELECT p.*, r.name as runner_name
                 FROM performance_data p
@@ -750,208 +1055,460 @@ def view_reports_page():
     conn.close()
 
     if df.empty:
-        st.info("No performance data available yet.")
+        st.info("No performance data available yet. Upload videos to start analyzing!")
         return
 
-    # Filter options
-    col1, col2 = st.columns(2)
+    # Convert date column
+    df['test_date'] = pd.to_datetime(df['test_date'])
+
+    # Filters
+    col1, col2, col3 = st.columns(3)
+
     with col1:
-        runners = df['runner_name'].unique()
-        selected_runner = st.selectbox("Filter by Runner", ["All"] + list(runners))
+        runners = ["All"] + list(df['runner_name'].unique())
+        selected_runner = st.selectbox("Filter by Runner", runners)
 
     with col2:
-        # Date range filter
+        # Date range
+        min_date = df['test_date'].min().date()
+        max_date = df['test_date'].max().date()
         date_range = st.date_input("Date Range",
-                                   value=(df['test_date'].min(), df['test_date'].max()),
-                                   format="YYYY-MM-DD")
+                                   value=(min_date, max_date),
+                                   min_value=min_date,
+                                   max_value=max_date)
+
+    with col3:
+        # Sort order
+        sort_order = st.selectbox("Sort by", ["Newest First", "Oldest First", "Best Performance"])
 
     # Apply filters
+    filtered_df = df.copy()
+
     if selected_runner != "All":
-        df = df[df['runner_name'] == selected_runner]
+        filtered_df = filtered_df[filtered_df['runner_name'] == selected_runner]
 
-    # Display summary statistics
-    st.subheader("Summary Statistics")
-    col1, col2, col3, col4 = st.columns(4)
+    if len(date_range) == 2:
+        filtered_df = filtered_df[
+            (filtered_df['test_date'].dt.date >= date_range[0]) &
+            (filtered_df['test_date'].dt.date <= date_range[1])
+            ]
 
-    with col1:
-        st.metric("Total Tests", len(df))
-    with col2:
-        st.metric("Avg Max Speed", f"{df['max_speed'].mean():.2f} m/s")
-    with col3:
-        st.metric("Best Speed", f"{df['max_speed'].max():.2f} m/s")
-    with col4:
-        st.metric("Athletes", df['runner_name'].nunique())
+    # Apply sorting
+    if sort_order == "Newest First":
+        filtered_df = filtered_df.sort_values('test_date', ascending=False)
+    elif sort_order == "Oldest First":
+        filtered_df = filtered_df.sort_values('test_date', ascending=True)
+    else:  # Best Performance
+        filtered_df = filtered_df.sort_values('max_speed', ascending=False)
 
-    # Performance trend
-    st.subheader("Performance Trends")
+    # Summary statistics
+    if not filtered_df.empty:
+        st.markdown("### 📈 Summary Statistics")
 
-    if selected_runner != "All" and len(df) > 1:
-        fig = go.Figure()
+        cols = st.columns(5)
+        stats = [
+            ("🏃 Total Tests", len(filtered_df)),
+            ("🏆 Best Speed", f"{filtered_df['max_speed'].max():.2f} m/s"),
+            ("📊 Avg Max Speed", f"{filtered_df['max_speed'].mean():.2f} m/s"),
+            ("⏱️ Best Time", f"{filtered_df['total_time'].min():.2f} s"),
+            ("👥 Athletes", filtered_df['runner_name'].nunique())
+        ]
 
-        fig.add_trace(go.Scatter(
-            x=pd.to_datetime(df['test_date']),
-            y=df['max_speed'],
-            mode='lines+markers',
-            name='Max Speed',
-            line=dict(color='rgb(255, 178, 44)', width=3),
-            marker=dict(size=8)
-        ))
+        for idx, (label, value) in enumerate(stats):
+            with cols[idx]:
+                st.markdown(f"""
+                <div class='metric-card' style='text-align: center; padding: 15px;'>
+                    <p style='margin: 0; color: #666; font-size: 14px;'>{label}</p>
+                    <h3 style='margin: 5px 0; color: rgb(255, 178, 44);'>{value}</h3>
+                </div>
+                """, unsafe_allow_html=True)
 
-        fig.add_trace(go.Scatter(
-            x=pd.to_datetime(df['test_date']),
-            y=df['avg_speed'],
-            mode='lines+markers',
-            name='Avg Speed',
-            line=dict(color='rgb(133, 72, 54)', width=3),
-            marker=dict(size=8)
-        ))
+        # Performance trend chart (if single runner selected)
+        if selected_runner != "All" and len(filtered_df) > 1:
+            st.markdown("### 📊 Performance Trend")
 
-        fig.update_layout(
-            title=f"Speed Progression - {selected_runner}",
-            xaxis_title="Date",
-            yaxis_title="Speed (m/s)",
-            height=400,
-            plot_bgcolor='rgba(247, 247, 247, 1)',
-            paper_bgcolor='rgba(247, 247, 247, 1)',
-            font=dict(family="Prompt")
+            fig = go.Figure()
+
+            # Max speed trend
+            fig.add_trace(go.Scatter(
+                x=filtered_df['test_date'],
+                y=filtered_df['max_speed'],
+                mode='lines+markers',
+                name='Max Speed',
+                line=dict(color='rgb(255, 178, 44)', width=3),
+                marker=dict(size=8)
+            ))
+
+            # Average speed trend
+            fig.add_trace(go.Scatter(
+                x=filtered_df['test_date'],
+                y=filtered_df['avg_speed'],
+                mode='lines+markers',
+                name='Avg Speed',
+                line=dict(color='rgb(133, 72, 54)', width=3),
+                marker=dict(size=8)
+            ))
+
+            fig.update_layout(
+                title=f"Speed Progression - {selected_runner}",
+                xaxis_title="Date",
+                yaxis_title="Speed (m/s)",
+                height=400,
+                plot_bgcolor='white',
+                paper_bgcolor='rgb(247, 247, 247)',
+                font=dict(family="Prompt"),
+                hovermode='x unified'
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Detailed records table
+        st.markdown("### 📋 Test Records")
+
+        # Prepare display dataframe
+        display_df = filtered_df[['runner_name', 'test_date', 'max_speed', 'avg_speed', 'total_time']].copy()
+        display_df['test_date'] = display_df['test_date'].dt.strftime('%Y-%m-%d %H:%M')
+        display_df.columns = ['Runner', 'Test Date', 'Max Speed (m/s)', 'Avg Speed (m/s)', 'Time (s)']
+
+        # Add performance indicator
+        display_df['Performance'] = display_df['Max Speed (m/s)'].apply(
+            lambda x: '🏆 Excellent' if x > 9 else '✅ Good' if x > 8 else '📈 Improving'
         )
 
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Detailed table
-    st.subheader("Test Records")
-    display_df = df[['runner_name', 'test_date', 'max_speed', 'avg_speed']].copy()
-    display_df['test_date'] = pd.to_datetime(display_df['test_date']).dt.strftime('%Y-%m-%d %H:%M')
-    display_df.columns = ['Runner', 'Test Date', 'Max Speed (m/s)', 'Avg Speed (m/s)']
-
-    st.dataframe(display_df, use_container_width=True)
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Max Speed (m/s)": st.column_config.NumberColumn(
+                    "Max Speed (m/s)",
+                    format="%.2f"
+                ),
+                "Avg Speed (m/s)": st.column_config.NumberColumn(
+                    "Avg Speed (m/s)",
+                    format="%.2f"
+                ),
+                "Time (s)": st.column_config.NumberColumn(
+                    "Time (s)",
+                    format="%.2f"
+                )
+            }
+        )
 
 
 def manage_users_page():
-    st.title("👥 Manage Users")
+    """Admin page for managing users"""
+    st.title("👥 User Management")
 
-    tab1, tab2 = st.tabs(["View Users", "Add User"])
+    tab1, tab2 = st.tabs(["View Users", "Add New User"])
 
     with tab1:
         conn = sqlite3.connect('running_analysis.db')
-        users_df = pd.read_sql_query("SELECT id, username, user_type, created_at FROM users", conn)
+        users_df = pd.read_sql_query("""
+                                     SELECT id, username, user_type, created_at
+                                     FROM users
+                                     ORDER BY created_at DESC
+                                     """, conn)
         conn.close()
 
-        st.dataframe(users_df, use_container_width=True)
+        if not users_df.empty:
+            # User statistics
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                total_users = len(users_df)
+                st.metric("Total Users", total_users)
+
+            with col2:
+                coaches = len(users_df[users_df['user_type'] == 'coach'])
+                st.metric("Coaches", coaches)
+
+            with col3:
+                runners = len(users_df[users_df['user_type'] == 'runner'])
+                st.metric("Runners", runners)
+
+            # User table
+            st.markdown("### User List")
+
+            # Format the dataframe
+            users_df['created_at'] = pd.to_datetime(users_df['created_at']).dt.strftime('%Y-%m-%d')
+            users_df['user_type'] = users_df['user_type'].str.upper()
+            users_df.columns = ['ID', 'Username', 'Role', 'Created Date']
+
+            st.dataframe(
+                users_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "ID": st.column_config.NumberColumn("ID", width="small"),
+                    "Role": st.column_config.TextColumn(
+                        "Role",
+                        help="User role in the system"
+                    )
+                }
+            )
+        else:
+            st.info("No users found in the system.")
 
     with tab2:
-        st.subheader("Add New User")
+        st.markdown("### Add New User")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            new_username = st.text_input("Username")
-            new_password = st.text_input("Password", type="password")
-        with col2:
-            user_type = st.selectbox("User Type", ["runner", "coach", "admin"])
+        with st.form("add_user_form"):
+            col1, col2 = st.columns(2)
 
-        if st.button("Add User", use_container_width=True):
-            success, _ = register_user(new_username, new_password, user_type)
-            if success:
-                st.success(f"User '{new_username}' added successfully!")
-                st.rerun()
-            else:
-                st.error("Failed to add user. Username might already exist.")
+            with col1:
+                new_username = st.text_input("Username", placeholder="Enter username")
+                new_password = st.text_input("Password", type="password", placeholder="Enter password")
+
+            with col2:
+                user_type = st.selectbox("User Type", ["runner", "coach", "admin"])
+                confirm_password = st.text_input("Confirm Password", type="password",
+                                                 placeholder="Confirm password")
+
+            submit = st.form_submit_button("Create User", use_container_width=True)
+
+            if submit:
+                if new_username and new_password and confirm_password:
+                    if new_password == confirm_password:
+                        if len(new_password) >= 6:
+                            success, _ = register_user(new_username, new_password, user_type)
+                            if success:
+                                st.success(f"✅ User '{new_username}' created successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Username already exists.")
+                        else:
+                            st.error("Password must be at least 6 characters long.")
+                    else:
+                        st.error("Passwords do not match.")
+                else:
+                    st.error("Please fill all fields.")
 
 
 def manage_runners_page():
-    st.title("🏃 Manage Runners")
+    """Admin page for managing runners"""
+    st.title("🏃 Runner Management")
 
-    tab1, tab2 = st.tabs(["View Runners", "Add Runner"])
+    tab1, tab2, tab3 = st.tabs(["View Runners", "Add Runner", "Assign Coach"])
 
     with tab1:
         conn = sqlite3.connect('running_analysis.db')
         runners_df = pd.read_sql_query("""
-                                       SELECT r.id, r.name, u.username as coach, r.created_at
+                                       SELECT r.id,
+                                              r.name      as runner_name,
+                                              u.username  as coach_name,
+                                              r.created_at,
+                                              COUNT(p.id) as total_tests
                                        FROM runners r
                                                 LEFT JOIN users u ON r.coach_id = u.id
+                                                LEFT JOIN performance_data p ON r.id = p.runner_id
+                                       GROUP BY r.id, r.name, u.username, r.created_at
+                                       ORDER BY r.created_at DESC
                                        """, conn)
         conn.close()
 
-        st.dataframe(runners_df, use_container_width=True)
+        if not runners_df.empty:
+            # Statistics
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                total_runners = len(runners_df)
+                st.metric("Total Runners", total_runners)
+
+            with col2:
+                assigned_runners = len(runners_df[runners_df['coach_name'].notna()])
+                st.metric("Assigned to Coaches", assigned_runners)
+
+            with col3:
+                total_tests = runners_df['total_tests'].sum()
+                st.metric("Total Tests", int(total_tests))
+
+            # Runners table
+            st.markdown("### Runner List")
+
+            # Format the dataframe
+            runners_df['created_at'] = pd.to_datetime(runners_df['created_at']).dt.strftime('%Y-%m-%d')
+            runners_df['coach_name'] = runners_df['coach_name'].fillna('Unassigned')
+            runners_df.columns = ['ID', 'Runner Name', 'Coach', 'Joined Date', 'Tests']
+
+            st.dataframe(
+                runners_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "ID": st.column_config.NumberColumn("ID", width="small"),
+                    "Tests": st.column_config.NumberColumn("Tests", width="small")
+                }
+            )
+        else:
+            st.info("No runners registered yet.")
 
     with tab2:
-        st.subheader("Add New Runner")
+        st.markdown("### Add New Runner")
 
-        runner_name = st.text_input("Runner Name")
+        with st.form("add_runner_form"):
+            runner_name = st.text_input("Runner Name", placeholder="Enter runner's full name")
+
+            # Get coaches
+            conn = sqlite3.connect('running_analysis.db')
+            c = conn.cursor()
+            c.execute("SELECT id, username FROM users WHERE user_type = 'coach'")
+            coaches = c.fetchall()
+            conn.close()
+
+            if coaches:
+                coach_options = ["Unassigned"] + [username for _, username in coaches]
+                coach_dict = {username: id for id, username in coaches}
+                selected_coach = st.selectbox("Assign to Coach (Optional)", coach_options)
+            else:
+                selected_coach = "Unassigned"
+                st.info("No coaches available. Add coaches to assign runners.")
+
+            submit = st.form_submit_button("Add Runner", use_container_width=True)
+
+            if submit:
+                if runner_name:
+                    conn = sqlite3.connect('running_analysis.db')
+                    c = conn.cursor()
+
+                    coach_id = coach_dict.get(selected_coach) if selected_coach != "Unassigned" else None
+
+                    try:
+                        c.execute("INSERT INTO runners (name, coach_id) VALUES (?, ?)",
+                                  (runner_name, coach_id))
+                        conn.commit()
+                        st.success(f"✅ Runner '{runner_name}' added successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding runner: {str(e)}")
+                    finally:
+                        conn.close()
+                else:
+                    st.error("Please enter runner name.")
+
+    with tab3:
+        st.markdown("### Assign/Reassign Coach")
+
+        conn = sqlite3.connect('running_analysis.db')
+
+        # Get runners
+        c = conn.cursor()
+        c.execute("SELECT id, name FROM runners ORDER BY name")
+        runners = c.fetchall()
 
         # Get coaches
-        conn = sqlite3.connect('running_analysis.db')
-        c = conn.cursor()
         c.execute("SELECT id, username FROM users WHERE user_type = 'coach'")
         coaches = c.fetchall()
         conn.close()
 
-        if coaches:
-            coach_dict = {username: id for id, username in coaches}
-            selected_coach = st.selectbox("Assign to Coach", ["None"] + list(coach_dict.keys()))
-        else:
-            selected_coach = "None"
-            st.info("No coaches available. Add a coach first to assign runners.")
+        if runners and coaches:
+            with st.form("assign_coach_form"):
+                runner_dict = {f"{name} (#{id})": id for id, name in runners}
+                selected_runner = st.selectbox("Select Runner", list(runner_dict.keys()))
 
-        if st.button("Add Runner", use_container_width=True):
-            if runner_name:
-                conn = sqlite3.connect('running_analysis.db')
-                c = conn.cursor()
+                coach_dict = {username: id for id, username in coaches}
+                coach_options = ["Unassigned"] + list(coach_dict.keys())
+                selected_coach = st.selectbox("Assign to Coach", coach_options)
 
-                coach_id = coach_dict.get(selected_coach) if selected_coach != "None" else None
+                submit = st.form_submit_button("Update Assignment", use_container_width=True)
 
-                try:
-                    c.execute("INSERT INTO runners (name, coach_id) VALUES (?, ?)",
-                              (runner_name, coach_id))
+                if submit:
+                    runner_id = runner_dict[selected_runner]
+                    coach_id = coach_dict.get(selected_coach) if selected_coach != "Unassigned" else None
+
+                    conn = sqlite3.connect('running_analysis.db')
+                    c = conn.cursor()
+                    c.execute("UPDATE runners SET coach_id = ? WHERE id = ?", (coach_id, runner_id))
                     conn.commit()
-                    st.success(f"Runner '{runner_name}' added successfully!")
-                    st.rerun()
-                except:
-                    st.error("Failed to add runner.")
-                finally:
                     conn.close()
-            else:
-                st.error("Please enter a runner name.")
+
+                    st.success("✅ Coach assignment updated successfully!")
+                    st.rerun()
+        else:
+            st.info("Add runners and coaches first to manage assignments.")
 
 
 def my_runners_page():
+    """Coach page to view their assigned runners"""
     st.title("👥 My Runners")
 
     conn = sqlite3.connect('running_analysis.db')
 
-    # Get coach's runners
+    # Get coach's runners with performance stats
     runners_df = pd.read_sql_query("""
                                    SELECT r.id,
                                           r.name,
-                                          COUNT(p.id)      as total_tests,
-                                          MAX(p.max_speed) as best_speed,
-                                          AVG(p.avg_speed) as avg_speed
+                                          COUNT(p.id)       as total_tests,
+                                          MAX(p.max_speed)  as best_speed,
+                                          AVG(p.avg_speed)  as avg_speed,
+                                          MIN(p.total_time) as best_time,
+                                          MAX(p.test_date)  as last_test
                                    FROM runners r
                                             JOIN users u ON r.coach_id = u.id
                                             LEFT JOIN performance_data p ON r.id = p.runner_id
                                    WHERE u.username = ?
                                    GROUP BY r.id, r.name
+                                   ORDER BY r.name
                                    """, conn, params=(st.session_state.username,))
 
     conn.close()
 
     if runners_df.empty:
-        st.info("No runners assigned to you yet.")
+        st.info("No runners assigned to you yet. Contact admin to get runners assigned.")
         return
 
-    # Display runners with their stats
+    # Display summary
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Total Runners", len(runners_df))
+
+    with col2:
+        active_runners = len(runners_df[runners_df['total_tests'] > 0])
+        st.metric("Active Runners", active_runners)
+
+    with col3:
+        total_tests = runners_df['total_tests'].sum()
+        st.metric("Total Tests", int(total_tests))
+
+    st.markdown("---")
+
+    # Display each runner's card
     for _, runner in runners_df.iterrows():
-        with st.expander(f"🏃 {runner['name']}"):
-            col1, col2, col3 = st.columns(3)
+        with st.expander(f"🏃 {runner['name']}", expanded=True):
+            col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Total Tests", int(runner['total_tests'] or 0))
+                tests = int(runner['total_tests']) if runner['total_tests'] else 0
+                st.metric("Tests Completed", tests)
+
             with col2:
                 best_speed = runner['best_speed'] if runner['best_speed'] else 0
                 st.metric("Best Speed", f"{best_speed:.2f} m/s")
+
             with col3:
                 avg_speed = runner['avg_speed'] if runner['avg_speed'] else 0
                 st.metric("Avg Speed", f"{avg_speed:.2f} m/s")
+
+            with col4:
+                best_time = runner['best_time'] if runner['best_time'] else 0
+                st.metric("Best Time", f"{best_time:.2f} s")
+
+            if runner['last_test']:
+                last_test = pd.to_datetime(runner['last_test']).strftime('%Y-%m-%d')
+                st.caption(f"Last tested: {last_test}")
+            else:
+                st.caption("No tests completed yet")
+
+            # Action buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(f"View Details", key=f"view_{runner['id']}"):
+                    st.info("Detailed view coming soon!")
+
+            with col2:
+                if st.button(f"Compare Progress", key=f"compare_{runner['id']}"):
+                    st.info("Progress comparison coming soon!")
 
 
 # Main execution

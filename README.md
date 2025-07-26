@@ -1,19 +1,27 @@
-# Running Performance Analysis System
+# Sprint Analysis Pro 🏃
 
-A comprehensive Streamlit application for analyzing running performance using video analysis and OpenCV.
+A comprehensive Streamlit application for analyzing 100m sprint performance using computer vision and advanced analytics.
 
 ## Features
 
-- **Multi-user Authentication**: Support for Admin, Coach, and Runner roles
-- **Video Upload**: Upload 4 videos for different running ranges (0-25m, 25-50m, 50-75m, 75-100m)
-- **OpenCV Analysis**: Simple human detection using HOG descriptor
-- **Performance Visualization**: Interactive charts showing speed and position data
-- **Excel Export**: Generate detailed performance reports
-- **Database Storage**: SQLite database for persistent data storage
+- **Multi-user Authentication**: Three user roles - Admin, Coach, and Runner
+- **Video Analysis**: Upload and analyze sprint videos for 4x25m segments
+- **Performance Metrics**: Real-time calculation of speed, position, and performance scores
+- **Data Visualization**: Interactive charts using Plotly
+- **Excel Reports**: Detailed performance reports with formatting
+- **Role-based Access**: Different features for different user types
+
+## Live Demo
+
+Visit: [https://run100.streamlit.app](https://run100.streamlit.app)
+
+Default credentials:
+- Username: `admin`
+- Password: `admin123`
 
 ## Installation
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/run100.git
+cd run100
