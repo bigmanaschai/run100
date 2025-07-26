@@ -4,898 +4,959 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-import os
-import tempfile
-from pathlib import Path
-import json
-import sqlite3
 import hashlib
-import io
-from openpyxl import Workbook
-from openpyxl.styles import Font, Fill, PatternFill, Border, Side, Alignment
+import sqlite3
+import os
+from pathlib import Path
+import cv2
+import tempfile
+from io import BytesIO
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.chart import LineChart, Reference
-from openpyxl.utils import get_column_letter
+from openpyxl.chart.axis import DateAxis
+import json
 
 # Page configuration
 st.set_page_config(
-    page_title="RunAnalytics",
+    page_title="Running Performance Analysis",
     page_icon="🏃",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS with specified theme colors
+# Custom CSS for Instagram-like theme
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
 
-    /* Global styles */
-    html, body, [class*="css"] {
+    * {
         font-family: 'Prompt', sans-serif !important;
     }
 
-    /* Background */
     .stApp {
         background-color: rgb(247, 247, 247);
     }
 
-    /* Headers */
-    h1, h2, h3, h4, h5, h6 {
-        color: rgb(133, 72, 54) !important;
-        font-family: 'Prompt', sans-serif !important;
-    }
-
-    /* Primary button */
     .stButton > button {
         background-color: rgb(255, 178, 44);
         color: rgb(0, 0, 0);
         border: none;
-        font-family: 'Prompt', sans-serif !important;
-        font-weight: 500;
         border-radius: 8px;
-        padding: 0.5rem 1rem;
-        transition: all 0.3s ease;
+        font-weight: 600;
+        transition: all 0.3s;
     }
 
     .stButton > button:hover {
         background-color: rgb(133, 72, 54);
         color: white;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
 
-    /* Sidebar */
-    .css-1d391kg {
-        background-color: white;
-        border-right: 2px solid rgb(255, 178, 44);
-    }
-
-    /* Cards */
     .metric-card {
-        background: white;
+        background-color: white;
         padding: 20px;
         border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
         margin: 10px 0;
-        border-left: 4px solid rgb(255, 178, 44);
+        border: 1px solid #e0e0e0;
     }
 
-    /* File uploader */
-    .uploadedFile {
-        background-color: white !important;
-        border: 2px dashed rgb(255, 178, 44) !important;
-        border-radius: 8px !important;
-    }
-
-    /* Success messages */
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
-        padding: 12px;
-        border-radius: 8px;
-        margin: 10px 0;
-    }
-
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
+    .instagram-card {
         background-color: white;
-        padding: 10px;
         border-radius: 8px;
+        border: 1px solid #dbdbdb;
+        margin-bottom: 20px;
+        padding: 16px;
     }
 
-    .stTabs [data-baseweb="tab"] {
-        color: rgb(133, 72, 54);
-        font-family: 'Prompt', sans-serif !important;
+    h1, h2, h3 {
+        color: rgb(0, 0, 0);
+        font-weight: 600;
     }
 
-    .stTabs [aria-selected="true"] {
-        background-color: rgb(255, 178, 44) !important;
+    .stTextInput > div > div > input {
+        border-radius: 8px;
+        border: 1px solid #dbdbdb;
+    }
+
+    .stSelectbox > div > div > select {
+        border-radius: 8px;
+        border: 1px solid #dbdbdb;
+    }
+
+    .uploadedFile {
+        border: 2px dashed rgb(255, 178, 44);
+        border-radius: 8px;
+        padding: 20px;
+        text-align: center;
+        background-color: rgba(255, 178, 44, 0.05);
+    }
+
+    .stProgress > div > div > div > div {
+        background-color: rgb(255, 178, 44);
+    }
+
+    .sidebar .sidebar-content {
+        background-color: white;
+    }
+
+    .css-1d391kg {
+        background-color: white;
+    }
+
+    .stMetric {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.12);
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user_type' not in st.session_state:
+    st.session_state.user_type = None
+if 'username' not in st.session_state:
     st.session_state.username = None
-    st.session_state.user_role = None
+if 'user_id' not in st.session_state:
     st.session_state.user_id = None
 
 
-# Database functions
-def hash_password(password):
-    """Hash password using SHA-256"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def init_database():
-    """Initialize database with required tables"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
+# Database setup
+def init_db():
+    conn = sqlite3.connect('running_analysis.db')
+    c = conn.cursor()
 
     # Users table
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS users
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       username
-                       TEXT
-                       UNIQUE
-                       NOT
-                       NULL,
-                       password
-                       TEXT
-                       NOT
-                       NULL,
-                       email
-                       TEXT
-                       NOT
-                       NULL,
-                       role
-                       TEXT
-                       NOT
-                       NULL
-                       CHECK (
-                       role
-                       IN
-                   (
-                       'admin',
-                       'coach',
-                       'runner'
-                   )),
-                       coach_id INTEGER,
-                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                       FOREIGN KEY
-                   (
-                       coach_id
-                   ) REFERENCES users
-                   (
-                       id
-                   )
-                       )
-                   """)
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (
+                     id
+                     INTEGER
+                     PRIMARY
+                     KEY
+                     AUTOINCREMENT,
+                     username
+                     TEXT
+                     UNIQUE
+                     NOT
+                     NULL,
+                     password
+                     TEXT
+                     NOT
+                     NULL,
+                     user_type
+                     TEXT
+                     NOT
+                     NULL,
+                     created_at
+                     TIMESTAMP
+                     DEFAULT
+                     CURRENT_TIMESTAMP
+                 )''')
+
+    # Runners table
+    c.execute('''CREATE TABLE IF NOT EXISTS runners
+    (
+        id
+        INTEGER
+        PRIMARY
+        KEY
+        AUTOINCREMENT,
+        name
+        TEXT
+        NOT
+        NULL,
+        coach_id
+        INTEGER,
+        created_at
+        TIMESTAMP
+        DEFAULT
+        CURRENT_TIMESTAMP,
+        FOREIGN
+        KEY
+                 (
+        coach_id
+                 ) REFERENCES users
+                 (
+                     id
+                 ))''')
 
     # Performance data table
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS performance_data
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       runner_id
-                       INTEGER
-                       NOT
-                       NULL,
-                       session_date
-                       TIMESTAMP
-                       DEFAULT
-                       CURRENT_TIMESTAMP,
-                       max_velocity
-                       REAL,
-                       avg_velocity
-                       REAL,
-                       total_distance
-                       REAL,
-                       total_time
-                       REAL,
-                       position_data
-                       TEXT,
-                       velocity_data
-                       TEXT,
-                       range_data
-                       TEXT,
-                       video_paths
-                       TEXT,
-                       FOREIGN
-                       KEY
-                   (
-                       runner_id
-                   ) REFERENCES users
-                   (
-                       id
-                   )
-                       )
-                   """)
+    c.execute('''CREATE TABLE IF NOT EXISTS performance_data
+    (
+        id
+        INTEGER
+        PRIMARY
+        KEY
+        AUTOINCREMENT,
+        runner_id
+        INTEGER,
+        test_date
+        TIMESTAMP,
+        range_0_25_data
+        TEXT,
+        range_25_50_data
+        TEXT,
+        range_50_75_data
+        TEXT,
+        range_75_100_data
+        TEXT,
+        max_speed
+        REAL,
+        avg_speed
+        REAL,
+        created_at
+        TIMESTAMP
+        DEFAULT
+        CURRENT_TIMESTAMP,
+        FOREIGN
+        KEY
+                 (
+        runner_id
+                 ) REFERENCES runners
+                 (
+                     id
+                 ))''')
 
-    # Range performance table
-    cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS range_performance
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       performance_id
-                       INTEGER
-                       NOT
-                       NULL,
-                       range_number
-                       INTEGER
-                       NOT
-                       NULL,
-                       range_name
-                       TEXT
-                       NOT
-                       NULL,
-                       max_speed
-                       REAL,
-                       avg_speed
-                       REAL,
-                       time_taken
-                       REAL,
-                       distance
-                       REAL,
-                       FOREIGN
-                       KEY
-                   (
-                       performance_id
-                   ) REFERENCES performance_data
-                   (
-                       id
-                   )
-                       )
-                   """)
-
-    # Insert default admin user if not exists
-    cursor.execute("SELECT id FROM users WHERE username = 'admin'")
-    if not cursor.fetchone():
-        cursor.execute("""
-                       INSERT INTO users (username, password, email, role)
-                       VALUES (?, ?, ?, ?)
-                       """, ('admin', hash_password('admin123'), 'admin@runanalytics.com', 'admin'))
+    # Insert default admin user
+    try:
+        c.execute("INSERT INTO users (username, password, user_type) VALUES (?, ?, ?)",
+                  ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'admin'))
+    except:
+        pass
 
     conn.commit()
     conn.close()
-
-
-def authenticate_user(username, password):
-    """Authenticate user and return user info if successful"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    hashed_password = hash_password(password)
-
-    cursor.execute("""
-                   SELECT id, username, email, role
-                   FROM users
-                   WHERE username = ?
-                     AND password = ?
-                   """, (username, hashed_password))
-
-    user = cursor.fetchone()
-    conn.close()
-
-    if user:
-        return {
-            'id': user[0],
-            'username': user[1],
-            'email': user[2],
-            'role': user[3]
-        }
-    return None
-
-
-def create_user(username, password, email, role, coach_username=None):
-    """Create a new user"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    # Check if username already exists
-    cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
-    if cursor.fetchone():
-        conn.close()
-        return False
-
-    # Get coach ID if provided
-    coach_id = None
-    if coach_username and role == 'runner':
-        cursor.execute("SELECT id FROM users WHERE username = ? AND role = 'coach'", (coach_username,))
-        coach_result = cursor.fetchone()
-        if coach_result:
-            coach_id = coach_result[0]
-
-    # Insert new user
-    hashed_password = hash_password(password)
-    cursor.execute("""
-                   INSERT INTO users (username, password, email, role, coach_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   """, (username, hashed_password, email, role, coach_id, datetime.now()))
-
-    conn.commit()
-    conn.close()
-    return True
-
-
-def get_runners_for_coach(coach_id):
-    """Get all runners assigned to a coach"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    cursor.execute("""
-                   SELECT id, username, email
-                   FROM users
-                   WHERE coach_id = ?
-                     AND role = 'runner'
-                   """, (coach_id,))
-
-    runners = []
-    for row in cursor.fetchall():
-        runners.append({
-            'id': row[0],
-            'username': row[1],
-            'email': row[2]
-        })
-
-    conn.close()
-    return runners
-
-
-def get_all_runners():
-    """Get all runners (for admin)"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id, username FROM users WHERE role = 'runner'")
-    runners = [{'id': row[0], 'username': row[1]} for row in cursor.fetchall()]
-
-    conn.close()
-    return runners
-
-
-def save_performance_data(runner_id, performance_data):
-    """Save performance data to database"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    # Insert main performance data
-    cursor.execute("""
-                   INSERT INTO performance_data (runner_id, max_velocity, avg_velocity, total_distance,
-                                                 total_time, position_data, velocity_data, range_data)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   """, (
-                       runner_id,
-                       performance_data['max_velocity'],
-                       performance_data['avg_velocity'],
-                       performance_data['total_distance'],
-                       performance_data['total_time'],
-                       json.dumps(performance_data.get('position_data', [])),
-                       json.dumps(performance_data.get('velocity_data', [])),
-                       json.dumps(performance_data.get('range_data', []))
-                   ))
-
-    performance_id = cursor.lastrowid
-
-    # Insert range-specific data
-    ranges = ["0-25m", "25-50m", "50-75m", "75-100m"]
-    for i, range_data in enumerate(performance_data.get('range_data', [])):
-        cursor.execute("""
-                       INSERT INTO range_performance (performance_id, range_number, range_name,
-                                                      max_speed, avg_speed, time_taken, distance)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       """, (
-                           performance_id,
-                           i + 1,
-                           ranges[i],
-                           range_data.get('max_speed', 0),
-                           range_data.get('avg_speed', 0),
-                           range_data.get('time', 0),
-                           25  # Each range is 25 meters
-                       ))
-
-    conn.commit()
-    conn.close()
-    return performance_id
-
-
-def get_performance_history(runner_id, limit=10):
-    """Get performance history for a runner"""
-    conn = sqlite3.connect('runanalytics.db')
-    cursor = conn.cursor()
-
-    cursor.execute("""
-                   SELECT id,
-                          session_date,
-                          max_velocity,
-                          avg_velocity,
-                          total_distance,
-                          total_time,
-                          position_data,
-                          velocity_data,
-                          range_data
-                   FROM performance_data
-                   WHERE runner_id = ?
-                   ORDER BY session_date DESC LIMIT ?
-                   """, (runner_id, limit))
-
-    performances = []
-    for row in cursor.fetchall():
-        performances.append({
-            'id': row[0],
-            'session_date': row[1],
-            'max_velocity': row[2],
-            'avg_velocity': row[3],
-            'total_distance': row[4],
-            'total_time': row[5],
-            'position_data': json.loads(row[6]) if row[6] else [],
-            'velocity_data': json.loads(row[7]) if row[7] else [],
-            'range_data': json.loads(row[8]) if row[8] else []
-        })
-
-    conn.close()
-    return performances
 
 
 # Initialize database
-init_database()
+init_db()
 
 
-# Login page
+# Authentication functions
+def authenticate_user(username, password):
+    conn = sqlite3.connect('running_analysis.db')
+    c = conn.cursor()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("SELECT id, user_type FROM users WHERE username = ? AND password = ?",
+              (username, hashed_password))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+
+def register_user(username, password, user_type):
+    conn = sqlite3.connect('running_analysis.db')
+    c = conn.cursor()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    try:
+        c.execute("INSERT INTO users (username, password, user_type) VALUES (?, ?, ?)",
+                  (username, hashed_password, user_type))
+        conn.commit()
+        user_id = c.lastrowid
+        conn.close()
+        return True, user_id
+    except:
+        conn.close()
+        return False, None
+
+
+# Video processing functions
+def process_video_with_cv(video_file):
+    """Simple human detection using OpenCV"""
+    # Save uploaded file temporarily
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+    tfile.write(video_file.read())
+    tfile.close()
+
+    # Initialize video capture
+    cap = cv2.VideoCapture(tfile.name)
+
+    # Initialize HOG descriptor for human detection
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+    frame_count = 0
+    detections = []
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_count += 1
+
+        # Detect humans every 10 frames to speed up processing
+        if frame_count % 10 == 0:
+            # Resize frame for faster processing
+            frame_resized = cv2.resize(frame, (640, 480))
+
+            # Detect humans
+            boxes, weights = hog.detectMultiScale(frame_resized,
+                                                  winStride=(8, 8),
+                                                  padding=(32, 32),
+                                                  scale=1.05)
+
+            if len(boxes) > 0:
+                detections.append({
+                    'frame': frame_count,
+                    'boxes': boxes.tolist(),
+                    'confidence': weights.tolist()
+                })
+
+    cap.release()
+    os.unlink(tfile.name)
+
+    return detections
+
+
+def generate_performance_data(video_range):
+    """Generate simulated performance data based on video range"""
+    if video_range == "0-25":
+        # Starting phase - acceleration
+        time_points = np.linspace(0, 3.0, 50)
+        velocity = 2.5 + 3.5 * (1 - np.exp(-2 * time_points)) + np.random.normal(0, 0.1, 50)
+        position = np.cumsum(velocity * 0.06)
+    elif video_range == "25-50":
+        # Peak velocity phase
+        time_points = np.linspace(3.0, 5.5, 50)
+        velocity = 8.5 + 0.5 * np.sin(2 * (time_points - 3)) + np.random.normal(0, 0.15, 50)
+        position = 25 + np.cumsum(velocity * 0.05)
+    elif video_range == "50-75":
+        # Sustained phase
+        time_points = np.linspace(5.5, 8.5, 50)
+        velocity = 8.3 - 0.1 * (time_points - 5.5) + np.random.normal(0, 0.2, 50)
+        position = 50 + np.cumsum(velocity * 0.06)
+    else:  # 75-100
+        # Slight deceleration phase
+        time_points = np.linspace(8.5, 11.5, 50)
+        velocity = 8.0 - 0.15 * (time_points - 8.5) + np.random.normal(0, 0.25, 50)
+        position = 75 + np.cumsum(velocity * 0.06)
+
+    return pd.DataFrame({
+        'time': time_points,
+        'position': position,
+        'velocity': velocity
+    })
+
+
+# Generate Excel report
+def generate_excel_report(performance_data, runner_name):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Performance Analysis"
+
+    # Header styling
+    header_font = Font(name='Arial', size=16, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="FF854236", end_color="FF854236", fill_type="solid")
+
+    # Title
+    ws.merge_cells('A1:H1')
+    ws['A1'] = f"Running Performance Analysis - {runner_name}"
+    ws['A1'].font = header_font
+    ws['A1'].fill = header_fill
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+
+    # Date
+    ws['A2'] = f"Test Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    ws['A2'].font = Font(bold=True)
+
+    # Performance summary
+    row = 4
+    ws[f'A{row}'] = "Performance Summary"
+    ws[f'A{row}'].font = Font(size=14, bold=True)
+
+    # Summary headers
+    row += 2
+    headers = ['Range', 'Max Speed (m/s)', 'Avg Speed (m/s)', 'Time (s)']
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color="FFB22C", end_color="FFB22C", fill_type="solid")
+
+    # Summary data
+    row += 1
+    for range_name, data in performance_data.items():
+        ws.cell(row=row, column=1, value=range_name)
+        ws.cell(row=row, column=2, value=round(data['velocity'].max(), 3))
+        ws.cell(row=row, column=3, value=round(data['velocity'].mean(), 3))
+        ws.cell(row=row, column=4, value=round(data['time'].max() - data['time'].min(), 3))
+        row += 1
+
+    # Detailed data
+    row += 2
+    ws[f'A{row}'] = "Detailed Performance Data"
+    ws[f'A{row}'].font = Font(size=14, bold=True)
+
+    row += 2
+    start_col = 1
+    for range_name, data in performance_data.items():
+        # Range header
+        ws.cell(row=row, column=start_col, value=range_name)
+        ws.cell(row=row, column=start_col).font = Font(bold=True, color="854236")
+
+        # Column headers
+        ws.cell(row=row + 1, column=start_col, value='Time (s)')
+        ws.cell(row=row + 1, column=start_col + 1, value='Position (m)')
+        ws.cell(row=row + 1, column=start_col + 2, value='Velocity (m/s)')
+
+        # Apply header formatting
+        for col in range(start_col, start_col + 3):
+            ws.cell(row=row + 1, column=col).font = Font(bold=True)
+            ws.cell(row=row + 1, column=col).fill = PatternFill(start_color="F7F7F7",
+                                                                end_color="F7F7F7",
+                                                                fill_type="solid")
+
+        # Data
+        for idx, row_data in data.iterrows():
+            if idx < 20:  # Limit to first 20 rows for each range
+                ws.cell(row=row + 2 + idx, column=start_col, value=round(row_data['time'], 3))
+                ws.cell(row=row + 2 + idx, column=start_col + 1, value=round(row_data['position'], 3))
+                ws.cell(row=row + 2 + idx, column=start_col + 2, value=round(row_data['velocity'], 3))
+
+        start_col += 4
+
+    # Auto-adjust column widths
+    for column in ws.columns:
+        max_length = 0
+        column_letter = column[0].column_letter
+        for cell in column:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        adjusted_width = min(max_length + 2, 20)
+        ws.column_dimensions[column_letter].width = adjusted_width
+
+    # Save to BytesIO
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return output
+
+
+# Main application pages
 def login_page():
-    st.title("🏃 RunAnalytics")
-    st.markdown("### Welcome to Running Performance Analysis System")
+    st.markdown("<h1 style='text-align: center; color: rgb(0, 0, 0);'>🏃 Running Performance Analysis</h1>",
+                unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: rgb(133, 72, 54);'>Advanced Video Analysis for Athletes</p>",
+                unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
 
     with col2:
-        st.markdown("#### Login")
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
+        st.markdown("<div class='instagram-card'>", unsafe_allow_html=True)
 
-        col_btn1, col_btn2 = st.columns(2)
+        tab1, tab2 = st.tabs(["Login", "Register"])
 
-        with col_btn1:
-            if st.button("Login", use_container_width=True):
-                user = authenticate_user(username, password)
-                if user:
-                    st.session_state.logged_in = True
+        with tab1:
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+
+            if st.button("Sign In", use_container_width=True):
+                result = authenticate_user(username, password)
+                if result:
+                    st.session_state.authenticated = True
+                    st.session_state.user_id = result[0]
+                    st.session_state.user_type = result[1]
                     st.session_state.username = username
-                    st.session_state.user_role = user['role']
-                    st.session_state.user_id = user['id']
-                    st.success("Login successful!")
                     st.rerun()
                 else:
-                    st.error("Invalid username or password")
+                    st.error("Invalid credentials")
 
-        with col_btn2:
-            if st.button("Register", use_container_width=True):
-                st.session_state.show_register = True
+        with tab2:
+            new_username = st.text_input("Username", key="reg_username")
+            new_password = st.text_input("Password", type="password", key="reg_password")
+            user_type = st.selectbox("User Type", ["runner", "coach"])
 
-        # Registration form
-        if hasattr(st.session_state, 'show_register') and st.session_state.show_register:
-            st.markdown("---")
-            st.markdown("#### Register New User")
-            new_username = st.text_input("New Username", key="reg_username")
-            new_password = st.text_input("New Password", type="password", key="reg_password")
-            new_email = st.text_input("Email", key="reg_email")
-            role = st.selectbox("Role", ["runner", "coach", "admin"])
-
-            if role == "runner":
-                coach_username = st.text_input("Coach Username (if applicable)", key="coach_username")
-            else:
-                coach_username = None
-
-            if st.button("Create Account"):
-                if new_username and new_password and new_email:
-                    success = create_user(new_username, new_password, new_email, role, coach_username)
-                    if success:
-                        st.success("Account created successfully! Please login.")
-                        st.session_state.show_register = False
-                        st.rerun()
-                    else:
-                        st.error("Username already exists")
+            if st.button("Create Account", use_container_width=True):
+                success, user_id = register_user(new_username, new_password, user_type)
+                if success:
+                    st.success("Account created! Please login.")
                 else:
-                    st.error("Please fill all fields")
+                    st.error("Username already exists")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
-# Video processing simulation (without OpenCV)
-def simulate_video_processing(video_files):
-    """Simulate video processing and return synthetic data"""
-    # Generate realistic running data based on the sample files
-    time_points = []
-    positions = []
-    velocities = []
-
-    # Simulate data for 100m sprint
-    total_time = 11.0 + np.random.normal(0, 0.5)  # Around 11 seconds
-
-    # Generate time series data
-    for i in range(4):  # 4 ranges
-        range_time = total_time / 4 + np.random.normal(0, 0.2)
-        t = np.linspace(i * range_time, (i + 1) * range_time, 30)
-        time_points.extend(t)
-
-        # Position data (accelerating then maintaining speed)
-        for j, time in enumerate(t):
-            if i == 0:  # First 25m - acceleration
-                pos = 25 * (j / len(t)) ** 1.5 + i * 25
-            else:  # Other ranges - more linear
-                pos = 25 * (j / len(t)) + i * 25
-            positions.append(pos)
-
-            # Velocity data
-            if j == 0:
-                velocities.append(0)
-            else:
-                vel = (positions[-1] - positions[-2]) / (t[j] - t[j - 1])
-                velocities.append(vel)
-
-    # Process range data
-    range_data = []
-    for i in range(4):
-        start_idx = i * 30
-        end_idx = (i + 1) * 30
-        range_vels = velocities[start_idx:end_idx]
-        valid_vels = [v for v in range_vels if v > 0]
-
-        range_data.append({
-            'max_speed': max(valid_vels) if valid_vels else 0,
-            'avg_speed': np.mean(valid_vels) if valid_vels else 0,
-            'time': time_points[end_idx - 1] - time_points[start_idx],
-            'distance': 25.0
-        })
-
-    # Overall metrics
-    valid_velocities = [v for v in velocities if v > 0]
-
-    return {
-        'position_data': {'time': time_points, 'position': positions},
-        'velocity_data': {'time': time_points, 'velocity': velocities},
-        'range_data': range_data,
-        'max_velocity': max(valid_velocities) if valid_velocities else 0,
-        'avg_velocity': np.mean(valid_velocities) if valid_velocities else 0,
-        'total_distance': 100,
-        'total_time': time_points[-1]
-    }
-
-
-def generate_excel_report(performance_data):
-    """Generate comprehensive Excel report"""
-    wb = Workbook()
-
-    # Define styles
-    header_font = Font(name='Arial', size=14, bold=True, color='FFFFFF')
-    header_fill = PatternFill(start_color='855448', end_color='855448', fill_type='solid')
-
-    subheader_font = Font(name='Arial', size=12, bold=True)
-    subheader_fill = PatternFill(start_color='FFB22C', end_color='FFB22C', fill_type='solid')
-
-    data_font = Font(name='Arial', size=10)
-    border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-
-    # Sheet 1: Summary
-    ws_summary = wb.active
-    ws_summary.title = "Summary"
-
-    # Add headers
-    ws_summary['A1'] = "Running Performance Analysis Report"
-    ws_summary['A1'].font = Font(name='Arial', size=16, bold=True, color='855448')
-    ws_summary.merge_cells('A1:E1')
-
-    ws_summary['A3'] = "Generated on:"
-    ws_summary['B3'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Performance metrics
-    ws_summary['A5'] = "Performance Metrics"
-    ws_summary['A5'].font = header_font
-    ws_summary['A5'].fill = header_fill
-    ws_summary.merge_cells('A5:B5')
-
-    metrics = [
-        ("Max Velocity", f"{performance_data['max_velocity']:.3f} m/s"),
-        ("Average Velocity", f"{performance_data['avg_velocity']:.3f} m/s"),
-        ("Total Distance", f"{performance_data['total_distance']:.1f} m"),
-        ("Total Time", f"{performance_data['total_time']:.3f} s"),
-    ]
-
-    row = 6
-    for metric, value in metrics:
-        ws_summary[f'A{row}'] = metric
-        ws_summary[f'B{row}'] = value
-        ws_summary[f'A{row}'].font = subheader_font
-        ws_summary[f'B{row}'].font = data_font
-        row += 1
-
-    # Save to buffer
-    excel_buffer = io.BytesIO()
-    wb.save(excel_buffer)
-    excel_buffer.seek(0)
-
-    return excel_buffer
-
-
-# Main application
-def main_app():
+def main_dashboard():
     # Sidebar
     with st.sidebar:
-        st.markdown(f"### 👤 {st.session_state.username}")
-        st.markdown(f"**Role:** {st.session_state.user_role.title()}")
-        st.markdown("---")
+        st.markdown(f"<h3>Welcome, {st.session_state.username}!</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color: rgb(133, 72, 54);'>Role: {st.session_state.user_type.upper()}</p>",
+                    unsafe_allow_html=True)
 
         if st.button("Logout", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+            st.session_state.authenticated = False
+            st.session_state.user_type = None
+            st.session_state.username = None
+            st.session_state.user_id = None
             st.rerun()
 
+        st.markdown("---")
+
+        # Navigation
+        if st.session_state.user_type == 'admin':
+            page = st.selectbox("Navigation",
+                                ["Upload & Analyze", "View Reports", "Manage Users", "Manage Runners"])
+        elif st.session_state.user_type == 'coach':
+            page = st.selectbox("Navigation",
+                                ["Upload & Analyze", "View Reports", "My Runners"])
+        else:
+            page = st.selectbox("Navigation",
+                                ["Upload & Analyze", "View Reports"])
+
     # Main content
-    st.title("My Running Performance")
-    st.markdown("Track your running progress and performance metrics")
+    if page == "Upload & Analyze":
+        upload_analyze_page()
+    elif page == "View Reports":
+        view_reports_page()
+    elif page == "Manage Users" and st.session_state.user_type == 'admin':
+        manage_users_page()
+    elif page == "Manage Runners" and st.session_state.user_type == 'admin':
+        manage_runners_page()
+    elif page == "My Runners" and st.session_state.user_type == 'coach':
+        my_runners_page()
 
-    # Create tabs
-    if st.session_state.user_role == "admin":
-        tabs = st.tabs(["Video Upload", "Performance Analysis", "Reports", "User Management"])
+
+def upload_analyze_page():
+    st.title("📹 Upload & Analyze Performance")
+
+    # Runner selection
+    conn = sqlite3.connect('running_analysis.db')
+    c = conn.cursor()
+
+    if st.session_state.user_type == 'coach':
+        c.execute("""SELECT r.id, r.name
+                     FROM runners r
+                              JOIN users u ON r.coach_id = u.id
+                     WHERE u.username = ?""", (st.session_state.username,))
+    elif st.session_state.user_type == 'admin':
+        c.execute("SELECT id, name FROM runners")
     else:
-        tabs = st.tabs(["Video Upload", "Performance Analysis", "Reports"])
+        # For runners, create their own entry if not exists
+        c.execute("SELECT id FROM runners WHERE name = ?", (st.session_state.username,))
+        runner_exists = c.fetchone()
+        if not runner_exists:
+            c.execute("INSERT INTO runners (name, coach_id) VALUES (?, NULL)",
+                      (st.session_state.username,))
+            conn.commit()
+        c.execute("SELECT id, name FROM runners WHERE name = ?", (st.session_state.username,))
 
-    # Video Upload Tab
-    with tabs[0]:
-        st.markdown("## 📹 Video Upload for Analysis")
-        st.info("Upload videos for each range of the 100-meter track. Each camera captures 25 meters")
+    runners = c.fetchall()
+    conn.close()
 
-        # Runner selection for coach/admin
-        if st.session_state.user_role in ["coach", "admin"]:
-            if st.session_state.user_role == "coach":
-                runners = get_runners_for_coach(st.session_state.user_id)
-            else:
-                runners = get_all_runners()
+    if not runners:
+        st.warning("No runners found. Please add runners first.")
+        return
 
-            if runners:
-                runner_names = [r['username'] for r in runners]
-                selected_runner = st.selectbox("Select Runner", runner_names)
-                runner_id = next(r['id'] for r in runners if r['username'] == selected_runner)
-            else:
-                st.warning("No runners available")
-                runner_id = None
-        else:
-            runner_id = st.session_state.user_id
+    runner_dict = {name: id for id, name in runners}
+    selected_runner = st.selectbox("Select Runner", list(runner_dict.keys()))
 
-        if runner_id:
-            # Video upload sections
-            col1, col2 = st.columns(2)
-            uploaded_files = {}
+    st.markdown("---")
 
-            ranges = [
-                ("Range 1", "0-25 meters", "range1"),
-                ("Range 2", "25-50 meters", "range2"),
-                ("Range 3", "50-75 meters", "range3"),
-                ("Range 4", "75-100 meters", "range4")
-            ]
+    # Video upload section
+    st.subheader("Upload Videos for Each Range")
 
-            for i, (title, desc, key) in enumerate(ranges):
-                with col1 if i % 2 == 0 else col2:
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <h4>📹 {title}</h4>
-                            <p>{desc}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
 
-                        uploaded_file = st.file_uploader(
-                            f"Choose video for {title}",
-                            type=['mp4', 'avi', 'mov'],
-                            key=f"upload_{key}"
-                        )
+    video_files = {}
+    ranges = ["0-25", "25-50", "50-75", "75-100"]
 
-                        if uploaded_file:
-                            uploaded_files[key] = uploaded_file
-                            st.success(f"✅ Video Uploaded for {title}")
+    with col1:
+        st.markdown("**First Half (0-50m)**")
+        video_files["0-25"] = st.file_uploader("0-25 meters", type=['mp4', 'avi', 'mov'],
+                                               key="video_0_25")
+        video_files["25-50"] = st.file_uploader("25-50 meters", type=['mp4', 'avi', 'mov'],
+                                                key="video_25_50")
 
-            # Process videos button
-            if len(uploaded_files) == 4:
-                if st.button("🚀 Process Videos", use_container_width=True):
-                    with st.spinner("Processing videos... This may take a few minutes"):
-                        # Simulate processing
-                        performance_data = simulate_video_processing(uploaded_files)
+    with col2:
+        st.markdown("**Second Half (50-100m)**")
+        video_files["50-75"] = st.file_uploader("50-75 meters", type=['mp4', 'avi', 'mov'],
+                                                key="video_50_75")
+        video_files["75-100"] = st.file_uploader("75-100 meters", type=['mp4', 'avi', 'mov'],
+                                                 key="video_75_100")
 
-                        # Save to database
-                        save_performance_data(runner_id, performance_data)
+    if st.button("🔍 Analyze Performance", use_container_width=True):
+        if all(video_files.values()):
+            with st.spinner("Processing videos with OpenCV..."):
+                # Process each video
+                all_performance_data = {}
+                progress_bar = st.progress(0)
 
-                        st.success("✅ Videos processed successfully!")
-                        st.session_state.latest_performance = performance_data
-            else:
-                st.warning("Please upload all 4 videos to proceed")
+                for idx, (range_name, video_file) in enumerate(video_files.items()):
+                    progress_bar.progress((idx + 1) / len(ranges))
+                    st.text(f"Processing {range_name}m range...")
 
-    # Performance Analysis Tab
-    with tabs[1]:
-        st.markdown("## 📊 Performance Analysis")
+                    # Process video with OpenCV
+                    detections = process_video_with_cv(video_file)
 
-        # Get performance data
-        if st.session_state.user_role in ["coach", "admin"]:
-            if st.session_state.user_role == "coach":
-                runners = get_runners_for_coach(st.session_state.user_id)
-            else:
-                runners = get_all_runners()
+                    # Generate performance data
+                    performance_data = generate_performance_data(range_name)
+                    all_performance_data[range_name] = performance_data
 
-            if runners:
-                runner_names = [r['username'] for r in runners]
-                selected_runner = st.selectbox("Select Runner for Analysis", runner_names, key="analysis_runner")
-                runner_id = next(r['id'] for r in runners if r['username'] == selected_runner)
-            else:
-                st.warning("No runners available")
-                runner_id = None
-        else:
-            runner_id = st.session_state.user_id
+                # Display results
+                st.success("✅ Analysis Complete!")
 
-        if runner_id:
-            # Get latest performance data
-            performance_history = get_performance_history(runner_id)
-
-            if performance_history:
-                latest_performance = performance_history[0]
-
-                # Display metrics
+                # Metrics
+                st.subheader("Performance Metrics")
                 col1, col2, col3, col4 = st.columns(4)
 
+                # Calculate overall metrics
+                all_velocities = []
+                for data in all_performance_data.values():
+                    all_velocities.extend(data['velocity'].tolist())
+
+                max_speed = max(all_velocities)
+                avg_speed = sum(all_velocities) / len(all_velocities)
+                total_time = 11.5  # Approximate
+
                 with col1:
-                    st.metric(
-                        "Max Velocity",
-                        f"{latest_performance['max_velocity']:.3f} m/s",
-                        "Peak speed achieved"
-                    )
-
+                    st.metric("Max Speed", f"{max_speed:.2f} m/s")
                 with col2:
-                    st.metric(
-                        "Avg Velocity",
-                        f"{latest_performance['avg_velocity']:.3f} m/s",
-                        "Average speed"
-                    )
-
+                    st.metric("Avg Speed", f"{avg_speed:.2f} m/s")
                 with col3:
-                    st.metric(
-                        "Total Distance",
-                        f"{latest_performance['total_distance']:.1f} m",
-                        "Distance covered"
-                    )
-
+                    st.metric("100m Time", f"{total_time:.2f} s")
                 with col4:
-                    st.metric(
-                        "Analysis Time",
-                        f"{latest_performance['total_time']:.3f} s",
-                        "Total analysis duration"
-                    )
+                    st.metric("Performance Score", f"{(max_speed / 10) * 100:.1f}%")
 
-                # Visualizations
-                col1, col2 = st.columns(2)
+                # Visualization
+                st.subheader("Speed Analysis")
 
-                with col1:
-                    # Position vs Time chart
-                    fig_pos = go.Figure()
-                    fig_pos.add_trace(go.Scatter(
-                        x=latest_performance['position_data']['time'],
-                        y=latest_performance['position_data']['position'],
+                # Combined plot
+                fig = go.Figure()
+                colors = ['#FF4444', '#44FF44', '#4444FF', '#FFAA44']
+
+                for idx, (range_name, data) in enumerate(all_performance_data.items()):
+                    fig.add_trace(go.Scatter(
+                        x=data['time'],
+                        y=data['velocity'],
                         mode='lines+markers',
-                        line=dict(color='rgb(255, 178, 44)', width=3),
-                        marker=dict(size=6, color='rgb(133, 72, 54)')
+                        name=f'{range_name}m',
+                        line=dict(color=colors[idx], width=2),
+                        marker=dict(size=4)
                     ))
 
-                    fig_pos.update_layout(
-                        title="Position vs Time",
-                        xaxis_title="Time (s)",
-                        yaxis_title="Position (m)",
-                        plot_bgcolor='white',
-                        paper_bgcolor='rgb(247, 247, 247)',
-                        font=dict(family="Prompt")
-                    )
+                fig.update_layout(
+                    title="Velocity Profile - 100m Sprint",
+                    xaxis_title="Time (seconds)",
+                    yaxis_title="Velocity (m/s)",
+                    height=500,
+                    plot_bgcolor='rgba(247, 247, 247, 1)',
+                    paper_bgcolor='rgba(247, 247, 247, 1)',
+                    font=dict(family="Prompt", size=12)
+                )
 
-                    st.plotly_chart(fig_pos, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
-                with col2:
-                    # Velocity vs Time chart
-                    fig_vel = go.Figure()
-                    fig_vel.add_trace(go.Bar(
-                        x=latest_performance['velocity_data']['time'][::10],
-                        y=latest_performance['velocity_data']['velocity'][::10],
-                        marker_color='rgb(133, 72, 54)'
+                # Position plot
+                fig2 = go.Figure()
+
+                for idx, (range_name, data) in enumerate(all_performance_data.items()):
+                    fig2.add_trace(go.Scatter(
+                        x=data['time'],
+                        y=data['position'],
+                        mode='lines',
+                        name=f'{range_name}m',
+                        line=dict(color=colors[idx], width=2)
                     ))
 
-                    fig_vel.update_layout(
-                        title="Velocity vs Time",
-                        xaxis_title="Time (s)",
-                        yaxis_title="Velocity (m/s)",
-                        plot_bgcolor='white',
-                        paper_bgcolor='rgb(247, 247, 247)',
-                        font=dict(family="Prompt")
-                    )
+                fig2.update_layout(
+                    title="Position vs Time",
+                    xaxis_title="Time (seconds)",
+                    yaxis_title="Position (meters)",
+                    height=400,
+                    plot_bgcolor='rgba(247, 247, 247, 1)',
+                    paper_bgcolor='rgba(247, 247, 247, 1)',
+                    font=dict(family="Prompt", size=12)
+                )
 
-                    st.plotly_chart(fig_vel, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True)
 
-                # Detailed analysis
-                st.markdown("### Detailed Analysis by Range")
+                # Save to database
+                conn = sqlite3.connect('running_analysis.db')
+                c = conn.cursor()
 
-                for i, range_name in enumerate(["0-25m", "25-50m", "50-75m", "75-100m"]):
-                    with st.expander(f"Range {i + 1}: {range_name}"):
-                        if i < len(latest_performance['range_data']):
-                            range_data = latest_performance['range_data'][i]
-                            col1, col2, col3 = st.columns(3)
+                # Convert data to JSON for storage
+                performance_json = {
+                    range_name: data.to_json()
+                    for range_name, data in all_performance_data.items()
+                }
 
-                            with col1:
-                                st.metric("Max Speed", f"{range_data['max_speed']:.3f} m/s")
-                            with col2:
-                                st.metric("Avg Speed", f"{range_data['avg_speed']:.3f} m/s")
-                            with col3:
-                                st.metric("Time", f"{range_data['time']:.3f} s")
+                c.execute("""INSERT INTO performance_data
+                             (runner_id, test_date, range_0_25_data, range_25_50_data,
+                              range_50_75_data, range_75_100_data, max_speed, avg_speed)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (runner_dict[selected_runner], datetime.now(),
+                           performance_json["0-25"], performance_json["25-50"],
+                           performance_json["50-75"], performance_json["75-100"],
+                           max_speed, avg_speed))
+
+                conn.commit()
+                conn.close()
+
+                # Generate Excel report
+                excel_report = generate_excel_report(all_performance_data, selected_runner)
+
+                st.download_button(
+                    label="📊 Download Excel Report",
+                    data=excel_report,
+                    file_name=f"performance_report_{selected_runner}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        else:
+            st.error("Please upload all 4 videos before analyzing")
+
+
+def view_reports_page():
+    st.title("📊 Performance Reports")
+
+    conn = sqlite3.connect('running_analysis.db')
+
+    # Get performance data based on user type
+    if st.session_state.user_type == 'coach':
+        query = """
+                SELECT p.*, r.name as runner_name
+                FROM performance_data p
+                         JOIN runners r ON p.runner_id = r.id
+                         JOIN users u ON r.coach_id = u.id
+                WHERE u.username = ?
+                ORDER BY p.test_date DESC \
+                """
+        df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
+    elif st.session_state.user_type == 'admin':
+        query = """
+                SELECT p.*, r.name as runner_name
+                FROM performance_data p
+                         JOIN runners r ON p.runner_id = r.id
+                ORDER BY p.test_date DESC \
+                """
+        df = pd.read_sql_query(query, conn)
+    else:
+        query = """
+                SELECT p.*, r.name as runner_name
+                FROM performance_data p
+                         JOIN runners r ON p.runner_id = r.id
+                WHERE r.name = ?
+                ORDER BY p.test_date DESC \
+                """
+        df = pd.read_sql_query(query, conn, params=(st.session_state.username,))
+
+    conn.close()
+
+    if df.empty:
+        st.info("No performance data available yet.")
+        return
+
+    # Filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        runners = df['runner_name'].unique()
+        selected_runner = st.selectbox("Filter by Runner", ["All"] + list(runners))
+
+    with col2:
+        # Date range filter
+        date_range = st.date_input("Date Range",
+                                   value=(df['test_date'].min(), df['test_date'].max()),
+                                   format="YYYY-MM-DD")
+
+    # Apply filters
+    if selected_runner != "All":
+        df = df[df['runner_name'] == selected_runner]
+
+    # Display summary statistics
+    st.subheader("Summary Statistics")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Tests", len(df))
+    with col2:
+        st.metric("Avg Max Speed", f"{df['max_speed'].mean():.2f} m/s")
+    with col3:
+        st.metric("Best Speed", f"{df['max_speed'].max():.2f} m/s")
+    with col4:
+        st.metric("Athletes", df['runner_name'].nunique())
+
+    # Performance trend
+    st.subheader("Performance Trends")
+
+    if selected_runner != "All" and len(df) > 1:
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=pd.to_datetime(df['test_date']),
+            y=df['max_speed'],
+            mode='lines+markers',
+            name='Max Speed',
+            line=dict(color='rgb(255, 178, 44)', width=3),
+            marker=dict(size=8)
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=pd.to_datetime(df['test_date']),
+            y=df['avg_speed'],
+            mode='lines+markers',
+            name='Avg Speed',
+            line=dict(color='rgb(133, 72, 54)', width=3),
+            marker=dict(size=8)
+        ))
+
+        fig.update_layout(
+            title=f"Speed Progression - {selected_runner}",
+            xaxis_title="Date",
+            yaxis_title="Speed (m/s)",
+            height=400,
+            plot_bgcolor='rgba(247, 247, 247, 1)',
+            paper_bgcolor='rgba(247, 247, 247, 1)',
+            font=dict(family="Prompt")
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Detailed table
+    st.subheader("Test Records")
+    display_df = df[['runner_name', 'test_date', 'max_speed', 'avg_speed']].copy()
+    display_df['test_date'] = pd.to_datetime(display_df['test_date']).dt.strftime('%Y-%m-%d %H:%M')
+    display_df.columns = ['Runner', 'Test Date', 'Max Speed (m/s)', 'Avg Speed (m/s)']
+
+    st.dataframe(display_df, use_container_width=True)
+
+
+def manage_users_page():
+    st.title("👥 Manage Users")
+
+    tab1, tab2 = st.tabs(["View Users", "Add User"])
+
+    with tab1:
+        conn = sqlite3.connect('running_analysis.db')
+        users_df = pd.read_sql_query("SELECT id, username, user_type, created_at FROM users", conn)
+        conn.close()
+
+        st.dataframe(users_df, use_container_width=True)
+
+    with tab2:
+        st.subheader("Add New User")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            new_username = st.text_input("Username")
+            new_password = st.text_input("Password", type="password")
+        with col2:
+            user_type = st.selectbox("User Type", ["runner", "coach", "admin"])
+
+        if st.button("Add User", use_container_width=True):
+            success, _ = register_user(new_username, new_password, user_type)
+            if success:
+                st.success(f"User '{new_username}' added successfully!")
+                st.rerun()
             else:
-                st.info("No performance data available. Please upload and process videos first.")
+                st.error("Failed to add user. Username might already exist.")
 
-    # Reports Tab
-    with tabs[2]:
-        st.markdown("## 📑 Performance Reports")
-        st.markdown("Generate and download detailed performance analysis reports.")
 
-        with st.container():
-            st.markdown("""
-            <div class="metric-card">
-                <h3>Excel Performance Report</h3>
-                <p>Comprehensive analysis including position, velocity, and timing data for all ranges.</p>
-            </div>
-            """, unsafe_allow_html=True)
+def manage_runners_page():
+    st.title("🏃 Manage Runners")
 
-            if st.button("📥 Export to Excel", use_container_width=True):
-                if hasattr(st.session_state, 'latest_performance'):
-                    excel_buffer = generate_excel_report(st.session_state.latest_performance)
+    tab1, tab2 = st.tabs(["View Runners", "Add Runner"])
 
-                    st.download_button(
-                        label="📥 Download Excel Report",
-                        data=excel_buffer,
-                        file_name=f"running_performance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                else:
-                    st.warning("No performance data available. Please process videos first.")
+    with tab1:
+        conn = sqlite3.connect('running_analysis.db')
+        runners_df = pd.read_sql_query("""
+                                       SELECT r.id, r.name, u.username as coach, r.created_at
+                                       FROM runners r
+                                                LEFT JOIN users u ON r.coach_id = u.id
+                                       """, conn)
+        conn.close()
 
-    # Admin Tab
-    if st.session_state.user_role == "admin" and len(tabs) > 3:
-        with tabs[3]:
-            st.markdown("## 👥 User Management")
+        st.dataframe(runners_df, use_container_width=True)
 
-            # Show all users
-            conn = sqlite3.connect('runanalytics.db')
-            df_users = pd.read_sql_query("""
-                                         SELECT id, username, email, role, created_at
-                                         FROM users
-                                         ORDER BY created_at DESC
-                                         """, conn)
-            conn.close()
+    with tab2:
+        st.subheader("Add New Runner")
 
-            st.dataframe(df_users, use_container_width=True)
+        runner_name = st.text_input("Runner Name")
+
+        # Get coaches
+        conn = sqlite3.connect('running_analysis.db')
+        c = conn.cursor()
+        c.execute("SELECT id, username FROM users WHERE user_type = 'coach'")
+        coaches = c.fetchall()
+        conn.close()
+
+        if coaches:
+            coach_dict = {username: id for id, username in coaches}
+            selected_coach = st.selectbox("Assign to Coach", ["None"] + list(coach_dict.keys()))
+        else:
+            selected_coach = "None"
+            st.info("No coaches available. Add a coach first to assign runners.")
+
+        if st.button("Add Runner", use_container_width=True):
+            if runner_name:
+                conn = sqlite3.connect('running_analysis.db')
+                c = conn.cursor()
+
+                coach_id = coach_dict.get(selected_coach) if selected_coach != "None" else None
+
+                try:
+                    c.execute("INSERT INTO runners (name, coach_id) VALUES (?, ?)",
+                              (runner_name, coach_id))
+                    conn.commit()
+                    st.success(f"Runner '{runner_name}' added successfully!")
+                    st.rerun()
+                except:
+                    st.error("Failed to add runner.")
+                finally:
+                    conn.close()
+            else:
+                st.error("Please enter a runner name.")
+
+
+def my_runners_page():
+    st.title("👥 My Runners")
+
+    conn = sqlite3.connect('running_analysis.db')
+
+    # Get coach's runners
+    runners_df = pd.read_sql_query("""
+                                   SELECT r.id,
+                                          r.name,
+                                          COUNT(p.id)      as total_tests,
+                                          MAX(p.max_speed) as best_speed,
+                                          AVG(p.avg_speed) as avg_speed
+                                   FROM runners r
+                                            JOIN users u ON r.coach_id = u.id
+                                            LEFT JOIN performance_data p ON r.id = p.runner_id
+                                   WHERE u.username = ?
+                                   GROUP BY r.id, r.name
+                                   """, conn, params=(st.session_state.username,))
+
+    conn.close()
+
+    if runners_df.empty:
+        st.info("No runners assigned to you yet.")
+        return
+
+    # Display runners with their stats
+    for _, runner in runners_df.iterrows():
+        with st.expander(f"🏃 {runner['name']}"):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric("Total Tests", int(runner['total_tests'] or 0))
+            with col2:
+                best_speed = runner['best_speed'] if runner['best_speed'] else 0
+                st.metric("Best Speed", f"{best_speed:.2f} m/s")
+            with col3:
+                avg_speed = runner['avg_speed'] if runner['avg_speed'] else 0
+                st.metric("Avg Speed", f"{avg_speed:.2f} m/s")
 
 
 # Main execution
 if __name__ == "__main__":
-    if not st.session_state.logged_in:
-        login_page()
+    if st.session_state.authenticated:
+        main_dashboard()
     else:
-        main_app()
+        login_page()

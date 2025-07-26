@@ -1,42 +1,14 @@
 [theme]
-# Primary color
 primaryColor = "#FFB22C"
-
-# Background color for the main content area
 backgroundColor = "#F7F7F7"
-
-# Background color for sidebar and most interactive widgets
 secondaryBackgroundColor = "#FFFFFF"
-
-# Color used for almost all text
 textColor = "#000000"
-
-# Font family for all text in the app
 font = "sans serif"
 
 [server]
-# Port number
-port = 8501
-
-# Maximum file upload size (in MB)
 maxUploadSize = 200
-
-# Enable file watching
-fileWatcherType = "auto"
+enableCORS = false
+enableXsrfProtection = true
 
 [browser]
-# Internet address where users should point their browsers
-serverAddress = "localhost"
-
-# Whether to automatically open the browser
 gatherUsageStats = false
-
-[runner]
-# Magic commands
-magicEnabled = true
-
-# Install required packages on first run
-installTracer = false
-
-# Allow viewers to rerun the app
-fastReruns = true
